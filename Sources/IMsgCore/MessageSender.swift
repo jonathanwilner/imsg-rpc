@@ -103,9 +103,45 @@ public struct MessageSender {
     event.setParam(list, forKeyword: keyDirectObject)
     script.executeAppleEvent(event, error: &errorInfo)
     if let errorInfo {
+      if shouldFallbackToOsascript(errorInfo: errorInfo) {
+        try runOsascript(source: source, arguments: arguments)
+        return
+      }
       let message =
         (errorInfo[NSAppleScript.errorMessage] as? String) ?? "Unknown AppleScript error"
       throw IMsgError.appleScriptFailure(message)
+    }
+  }
+
+  private func shouldFallbackToOsascript(errorInfo: NSDictionary) -> Bool {
+    if let errorNumber = errorInfo[NSAppleScript.errorNumber] as? Int, errorNumber == -1743 {
+      return true
+    }
+    if let message = errorInfo[NSAppleScript.errorMessage] as? String {
+      let lower = message.lowercased()
+      return lower.contains("not authorized") || lower.contains("not authorised")
+    }
+    return false
+  }
+
+  private func runOsascript(source: String, arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = ["-l", "AppleScript", "-"] + arguments
+    let stdinPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardInput = stdinPipe
+    process.standardError = stderrPipe
+    try process.run()
+    if let data = source.data(using: .utf8) {
+      stdinPipe.fileHandleForWriting.write(data)
+    }
+    stdinPipe.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+    if process.terminationStatus != 0 {
+      let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+      let message = String(data: data, encoding: .utf8) ?? "Unknown osascript error"
+      throw IMsgError.appleScriptFailure(message.trimmingCharacters(in: .whitespacesAndNewlines))
     }
   }
 }
