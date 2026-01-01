@@ -48,5 +48,12 @@ let package = Package(
                 "IMsgCore",
             ]
         ),
+        .testTarget(
+            name: "imsgTests",
+            dependencies: [
+                "imsg",
+                "IMsgCore",
+            ]
+        ),
     ]
 )

@@ -43,12 +43,14 @@ private enum TestDatabase {
       CREATE TABLE chat (
         ROWID INTEGER PRIMARY KEY,
         chat_identifier TEXT,
+        guid TEXT,
         display_name TEXT,
         service_name TEXT
       );
       """
     )
     try db.execute("CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);")
+    try db.execute("CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);")
     try db.execute("CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);")
     try db.execute(
       """
@@ -75,11 +77,12 @@ private enum TestDatabase {
     let now = Date()
     try db.run(
       """
-      INSERT INTO chat(ROWID, chat_identifier, display_name, service_name)
-      VALUES (1, '+123', 'Test Chat', 'iMessage')
+      INSERT INTO chat(ROWID, chat_identifier, guid, display_name, service_name)
+      VALUES (1, '+123', 'iMessage;+;chat123', 'Test Chat', 'iMessage')
       """
     )
     try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+123'), (2, 'Me')")
+    try db.run("INSERT INTO chat_handle_join(chat_id, handle_id) VALUES (1, 1), (1, 2)")
 
     let messageRows: [(Int64, Int64, String?, Bool, Date, Int)] = [
       (1, 1, "hello", false, now.addingTimeInterval(-600), 0),
@@ -138,6 +141,48 @@ func listChatsReturnsChat() throws {
 }
 
 @Test
+func chatInfoReturnsMetadata() throws {
+  let store = try TestDatabase.makeStore()
+  let info = try store.chatInfo(chatID: 1)
+  #expect(info?.identifier == "+123")
+  #expect(info?.guid == "iMessage;+;chat123")
+  #expect(info?.name == "Test Chat")
+  #expect(info?.service == "iMessage")
+}
+
+@Test
+func participantsReturnsUniqueHandles() throws {
+  let db = try Connection(.inMemory)
+  try db.execute(
+    """
+    CREATE TABLE chat (
+      ROWID INTEGER PRIMARY KEY,
+      chat_identifier TEXT,
+      guid TEXT,
+      display_name TEXT,
+      service_name TEXT
+    );
+    """
+  )
+  try db.execute("CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);")
+  try db.execute("CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);")
+  try db.run(
+    """
+    INSERT INTO chat(ROWID, chat_identifier, guid, display_name, service_name)
+    VALUES (1, 'iMessage;+;chat123', 'iMessage;+;chat123', 'Group', 'iMessage')
+    """
+  )
+  try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+123'), (2, 'me@icloud.com')")
+  try db.run("INSERT INTO chat_handle_join(chat_id, handle_id) VALUES (1, 1), (1, 2), (1, 1)")
+
+  let store = try MessageStore(connection: db, path: ":memory:")
+  let participants = try store.participants(chatID: 1)
+  #expect(participants.count == 2)
+  #expect(participants.contains("+123"))
+  #expect(participants.contains("me@icloud.com"))
+}
+
+@Test
 func messagesByChatReturnsMessages() throws {
   let store = try TestDatabase.makeStore()
   let messages = try store.messages(chatID: 1, limit: 10)
@@ -175,6 +220,7 @@ func messagesByChatUsesAttributedBodyFallback() throws {
     CREATE TABLE chat (
       ROWID INTEGER PRIMARY KEY,
       chat_identifier TEXT,
+      guid TEXT,
       display_name TEXT,
       service_name TEXT
     );
@@ -196,8 +242,8 @@ func messagesByChatUsesAttributedBodyFallback() throws {
   let body = Blob(bytes: bodyBytes)
   try db.run(
     """
-    INSERT INTO chat(ROWID, chat_identifier, display_name, service_name)
-    VALUES (1, '+123', 'Test Chat', 'iMessage')
+    INSERT INTO chat(ROWID, chat_identifier, guid, display_name, service_name)
+    VALUES (1, '+123', 'iMessage;+;chat123', 'Test Chat', 'iMessage')
     """
   )
   try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+123')")
@@ -238,6 +284,7 @@ func messagesByChatUsesLengthPrefixedAttributedBodyFallback() throws {
     CREATE TABLE chat (
       ROWID INTEGER PRIMARY KEY,
       chat_identifier TEXT,
+      guid TEXT,
       display_name TEXT,
       service_name TEXT
     );
@@ -260,8 +307,8 @@ func messagesByChatUsesLengthPrefixedAttributedBodyFallback() throws {
   let body = Blob(bytes: bodyBytes)
   try db.run(
     """
-    INSERT INTO chat(ROWID, chat_identifier, display_name, service_name)
-    VALUES (1, '+123', 'Test Chat', 'iMessage')
+    INSERT INTO chat(ROWID, chat_identifier, guid, display_name, service_name)
+    VALUES (1, '+123', 'iMessage;+;chat123', 'Test Chat', 'iMessage')
     """
   )
   try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+123')")
@@ -302,6 +349,7 @@ func messagesAfterUsesAttributedBodyFallback() throws {
     CREATE TABLE chat (
       ROWID INTEGER PRIMARY KEY,
       chat_identifier TEXT,
+      guid TEXT,
       display_name TEXT,
       service_name TEXT
     );
@@ -368,6 +416,7 @@ func longRepeatedPatternMessage() throws {
     CREATE TABLE chat (
       ROWID INTEGER PRIMARY KEY,
       chat_identifier TEXT,
+      guid TEXT,
       display_name TEXT,
       service_name TEXT
     );
@@ -394,8 +443,8 @@ func longRepeatedPatternMessage() throws {
   let body = Blob(bytes: bodyBytes)
   try db.run(
     """
-    INSERT INTO chat(ROWID, chat_identifier, display_name, service_name)
-    VALUES (1, '+123', 'Test Chat', 'iMessage')
+    INSERT INTO chat(ROWID, chat_identifier, guid, display_name, service_name)
+    VALUES (1, '+123', 'iMessage;+;chat123', 'Test Chat', 'iMessage')
     """
   )
   try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+123')")
