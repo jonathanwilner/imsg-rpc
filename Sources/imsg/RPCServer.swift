@@ -119,9 +119,9 @@ final class RPCServer {
     let id = request["id"]
 
     do {
-      let (store, watcher, cache) = try requireDependencies()
       switch method {
       case "chats.list":
+        let (store, _, cache) = try requireDependencies()
         let limit = intParam(params["limit"]) ?? 20
         let chats = try store.listChats(limit: max(limit, 1))
         let payloads = try chats.map { chat in
@@ -143,6 +143,7 @@ final class RPCServer {
         }
         respond(id: id, result: ["chats": payloads])
       case "messages.history":
+        let (store, _, cache) = try requireDependencies()
         guard let chatID = int64Param(params["chat_id"]) else {
           throw RPCError.invalidParams("chat_id is required")
         }
@@ -168,6 +169,7 @@ final class RPCServer {
         }
         respond(id: id, result: ["messages": payloads])
       case "watch.subscribe":
+        let (store, watcher, cache) = try requireDependencies()
         let chatID = int64Param(params["chat_id"])
         let sinceRowID = int64Param(params["since_rowid"])
         let participants = stringArrayParam(params["participants"])
@@ -232,8 +234,10 @@ final class RPCServer {
         }
         respond(id: id, result: ["ok": true])
       case "send":
+        let (_, _, cache) = try requireDependencies()
         try handleSend(params: params, id: id, cache: cache)
       case "reactions.send":
+        let (store, _, cache) = try requireDependencies()
         try handleReaction(params: params, id: id, store: store, cache: cache)
       case "contacts.search":
         try handleContactSearch(params: params, id: id)

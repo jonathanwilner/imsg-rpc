@@ -123,6 +123,7 @@ enum ComposeField {
 enum FocusPane {
     Chats,
     Messages,
+    Compose,
 }
 
 struct App {
@@ -256,12 +257,22 @@ fn handle_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Resul
 }
 
 fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Result<bool> {
+    if app.show_help {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('?') => {
+                app.show_help = false;
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
     match key.code {
         KeyCode::Char('q') => return Ok(true),
         KeyCode::Tab => {
             app.focus = match app.focus {
                 FocusPane::Chats => FocusPane::Messages,
-                FocusPane::Messages => FocusPane::Chats,
+                FocusPane::Messages => FocusPane::Compose,
+                FocusPane::Compose => FocusPane::Chats,
             };
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
@@ -271,7 +282,17 @@ fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io
         KeyCode::Char('j') => handle_scroll_messages(app, 1),
         KeyCode::PageUp => handle_scroll_messages(app, -10),
         KeyCode::PageDown => handle_scroll_messages(app, 10),
-        KeyCode::Enter => handle_enter(client, app),
+        KeyCode::Enter => match app.focus {
+            FocusPane::Compose => {
+                let field = if app.compose_to.trim().is_empty() {
+                    ComposeField::To
+                } else {
+                    ComposeField::Body
+                };
+                begin_compose(app, field);
+            }
+            _ => handle_enter(client, app),
+        },
         KeyCode::Char('w') => handle_watch(client, app),
         KeyCode::Char('s') => begin_compose(app, ComposeField::Body),
         KeyCode::Char('n') => begin_compose(app, ComposeField::To),
@@ -280,6 +301,15 @@ fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io
         KeyCode::Char('R') => handle_reaction(app),
         KeyCode::Char('h') | KeyCode::Char('?') => {
             app.show_help = !app.show_help;
+        }
+        KeyCode::Char(_) | KeyCode::Backspace if matches!(app.focus, FocusPane::Compose) => {
+            let field = if app.compose_to.trim().is_empty() {
+                ComposeField::To
+            } else {
+                ComposeField::Body
+            };
+            begin_compose(app, field);
+            return handle_compose_key(client, app, key);
         }
         _ => {}
     }
@@ -316,6 +346,7 @@ fn handle_arrow_navigation(app: &mut App, code: KeyCode) {
             }
             _ => {}
         },
+        FocusPane::Compose => {}
     }
 }
 
@@ -339,6 +370,7 @@ fn handle_enter(client: &mut RpcClient, app: &mut App) {
             }
         }
         FocusPane::Messages => {}
+        FocusPane::Compose => {}
     }
 }
 
@@ -371,9 +403,15 @@ fn chat_service(app: &App, chat_id: i64) -> Option<&str> {
 fn bubble_style(message: &Message, service: Option<&str>) -> Style {
     if message.is_from_me {
         if matches!(service, Some("SMS") | Some("sms")) {
-            Style::default().fg(Color::White).bg(Color::Green)
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White).bg(Color::Blue)
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
         }
     } else {
         Style::default().fg(Color::Black).bg(Color::Gray)
@@ -675,7 +713,7 @@ fn refresh_contact_suggestions(client: &mut RpcClient, app: &mut App) {
 
 fn help_text() -> &'static str {
     "imsg-tui help\n\
-q quit  Tab focus  Enter history  w watch  r refresh\n\
+q quit  Tab focus (chats/messages/compose)  Enter history  w watch  r refresh\n\
 s send (compose)  n new (compose to)  c compose\n\
 R react  o open url  PgUp/PgDn scroll  j/k scroll\n\
 \n\
@@ -857,6 +895,12 @@ fn handle_rpc_error(app: &mut App, pending: PendingRequest, error: &Value) {
         .get("message")
         .and_then(|v| v.as_str())
         .unwrap_or("rpc error");
+    let detail = error
+        .get("data")
+        .and_then(|v| v.as_str())
+        .and_then(|value| value.lines().next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     match pending {
         PendingRequest::ResolveContacts => {
             app.status = "contacts unavailable; names disabled".to_string();
@@ -871,11 +915,16 @@ fn handle_rpc_error(app: &mut App, pending: PendingRequest, error: &Value) {
             }
         }
         _ => {
-            if code != 0 {
-                app.status = format!("rpc error ({code}): {message}");
+            let mut status = if code != 0 {
+                format!("rpc error ({code}): {message}")
             } else {
-                app.status = format!("rpc error: {message}");
+                format!("rpc error: {message}")
+            };
+            if let Some(detail) = detail {
+                status.push_str(" - ");
+                status.push_str(detail);
             }
+            app.status = status;
         }
     }
 }
@@ -934,6 +983,16 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
                 app.selected = 0;
             }
             app.status = "chats loaded".to_string();
+            let handles: Vec<String> = app
+                .chats
+                .iter()
+                .map(|chat| chat.identifier.clone())
+                .filter(|handle| !handle.is_empty())
+                .filter(|handle| !app.contacts.contains_key(handle))
+                .collect();
+            if !handles.is_empty() {
+                request_contact_resolve(client, app, &handles);
+            }
         }
         PendingRequest::History => {
             let messages = result
@@ -1179,24 +1238,40 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         .chats
         .iter()
         .map(|chat| {
+            let contact_name = app.contacts.get(&chat.identifier).cloned().unwrap_or_default();
             let title = if chat.name.is_empty() {
-                format!(
-                    "{} [{}] last={}",
-                    chat.identifier, chat.service, chat.last_message_at
-                )
-            } else {
+                if contact_name.is_empty() {
+                    format!(
+                        "{} [{}] last={}",
+                        chat.identifier, chat.service, chat.last_message_at
+                    )
+                } else {
+                    format!(
+                        "{} ({}) [{}] last={}",
+                        contact_name, chat.identifier, chat.service, chat.last_message_at
+                    )
+                }
+            } else if chat.identifier.is_empty() {
+                format!("{} [{}] last={}", chat.name, chat.service, chat.last_message_at)
+            } else if contact_name.is_empty() || contact_name == chat.name {
                 format!(
                     "{} ({}) [{}] last={}",
                     chat.name, chat.identifier, chat.service, chat.last_message_at
+                )
+            } else {
+                format!(
+                    "{} ({}, {}) [{}] last={}",
+                    chat.name, contact_name, chat.identifier, chat.service, chat.last_message_at
                 )
             };
             ListItem::new(Line::from(vec![Span::raw(title)]))
         })
         .collect();
 
-    let chats_title = match app.focus {
-        FocusPane::Chats => "Chats *",
-        FocusPane::Messages => "Chats",
+    let chats_title = if matches!(app.focus, FocusPane::Chats) {
+        "Chats *"
+    } else {
+        "Chats"
     };
     let chats_list = List::new(chats)
         .block(Block::default().title(chats_title).borders(Borders::ALL))
@@ -1230,7 +1305,11 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
                 base_style.add_modifier(Modifier::ITALIC),
             )]));
         }
-        let link_style = base_style.add_modifier(Modifier::UNDERLINED).fg(Color::LightBlue);
+        let link_style = if message.is_from_me {
+            base_style.add_modifier(Modifier::UNDERLINED)
+        } else {
+            base_style.add_modifier(Modifier::UNDERLINED).fg(Color::LightBlue)
+        };
         let mut text_lines = styled_text_lines(&message.text, base_style, link_style);
         message_lines.append(&mut text_lines);
         if let Some(summary) = reaction_summary(&message.reactions) {
@@ -1241,9 +1320,10 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         }
         message_lines.push(Line::from(vec![Span::raw("")]));
     }
-    let messages_title = match app.focus {
-        FocusPane::Messages => "Messages *",
-        FocusPane::Chats => "Messages",
+    let messages_title = if matches!(app.focus, FocusPane::Messages) {
+        "Messages *"
+    } else {
+        "Messages"
     };
     let messages = Paragraph::new(Text::from(message_lines))
         .block(Block::default().title(messages_title).borders(Borders::ALL))
@@ -1251,7 +1331,7 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
     frame.render_widget(messages, body[1]);
 
     let compose_active = matches!(app.input_mode, InputMode::Compose);
-    let compose_title = if compose_active {
+    let compose_title = if compose_active || matches!(app.focus, FocusPane::Compose) {
         "Compose *"
     } else {
         "Compose"

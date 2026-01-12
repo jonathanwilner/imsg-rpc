@@ -352,6 +352,16 @@ impl App {
                     self.selected = 0;
                 }
                 self.status = "chats loaded".to_string();
+                let handles: Vec<String> = self
+                    .chats
+                    .iter()
+                    .map(|chat| chat.identifier.clone())
+                    .filter(|handle| !handle.is_empty())
+                    .filter(|handle| !self.contacts.contains_key(handle))
+                    .collect();
+                if !handles.is_empty() {
+                    self.request_contact_resolve(&handles);
+                }
             }
             PendingRequest::History => {
                 let messages = result
@@ -682,12 +692,31 @@ impl Application for App {
 
         let mut chat_items = Column::new().spacing(6);
         for (index, chat) in self.chats.iter().enumerate() {
+            let contact_name = self
+                .contacts
+                .get(&chat.identifier)
+                .cloned()
+                .unwrap_or_default();
             let label = if chat.name.is_empty() {
-                format!("{} [{}] {}", chat.identifier, chat.service, chat.last_message_at)
-            } else {
+                if contact_name.is_empty() {
+                    format!("{} [{}] {}", chat.identifier, chat.service, chat.last_message_at)
+                } else {
+                    format!(
+                        "{} ({}) [{}] {}",
+                        contact_name, chat.identifier, chat.service, chat.last_message_at
+                    )
+                }
+            } else if chat.identifier.is_empty() {
+                format!("{} [{}] {}", chat.name, chat.service, chat.last_message_at)
+            } else if contact_name.is_empty() || contact_name == chat.name {
                 format!(
                     "{} ({}) [{}] {}",
                     chat.name, chat.identifier, chat.service, chat.last_message_at
+                )
+            } else {
+                format!(
+                    "{} ({}, {}) [{}] {}",
+                    chat.name, contact_name, chat.identifier, chat.service, chat.last_message_at
                 )
             };
 

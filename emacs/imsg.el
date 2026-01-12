@@ -595,11 +595,26 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
            (or imsg-remote-directory "local")))
 
 (defun imsg--format-chat (chat)
-  (format "[%s] %s (%s) last=%s"
-          (alist-get 'id chat)
-          (or (alist-get 'name chat) "")
-          (or (alist-get 'identifier chat) "")
-          (or (alist-get 'last_message_at chat) "")))
+  (let* ((chat-name (or (alist-get 'name chat) ""))
+         (identifier (or (alist-get 'identifier chat) ""))
+         (contact-name (and (not (string-empty-p identifier))
+                            (gethash identifier imsg--contact-cache)))
+         (label (cond
+                 ((string-empty-p chat-name)
+                  (if (and contact-name (not (string-empty-p contact-name)))
+                      (format "%s (%s)" contact-name identifier)
+                    identifier))
+                 ((string-empty-p identifier)
+                  chat-name)
+                 ((or (not contact-name) (string-empty-p contact-name)
+                      (string= contact-name chat-name))
+                  (format "%s (%s)" chat-name identifier))
+                 (t
+                  (format "%s (%s, %s)" chat-name contact-name identifier)))))
+    (format "[%s] %s last=%s"
+            (alist-get 'id chat)
+            label
+            (or (alist-get 'last_message_at chat) ""))))
 
 (defun imsg--format-message (message)
   (let* ((is-from-me (alist-get 'is_from_me message))
@@ -658,6 +673,9 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
   (interactive "nLimit: ")
   (let* ((result (imsg-chats-list limit))
          (chats (alist-get 'chats result)))
+    (imsg--cache-contacts
+     (delete-dups
+      (delq nil (mapcar (lambda (chat) (alist-get 'identifier chat)) chats))))
     (imsg--display-lines "*imsg-chats*"
                          (mapcar #'imsg--format-chat chats))))
 

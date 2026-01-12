@@ -55,6 +55,8 @@ update_app() {
     <string>1</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSContactsUsageDescription</key>
+    <string>IMsgRPC needs access to Contacts to resolve names for messages.</string>
   </dict>
 </plist>
 PLIST
