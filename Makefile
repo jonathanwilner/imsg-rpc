@@ -8,6 +8,7 @@ help:
 		"make lint    - swift format lint + swiftlint" \
 		"make test    - sync version, patch deps, run swift test" \
 		"make build   - universal release build into bin/" \
+		"make rpc-app - update /Applications/IMsgRPC.app wrapper" \
 		"make imsg    - clean rebuild + run debug binary (ARGS=...)" \
 		"make emacs-test - run emacs ERT tests" \
 		"make remote-test - run remote RPC smoke tests over SSH" \
@@ -32,6 +33,9 @@ build:
 	swift package resolve
 	scripts/patch-deps.sh
 	scripts/build-universal.sh
+
+rpc-app:
+	scripts/update-rpc-app.sh
 
 imsg:
 	scripts/generate-version.sh

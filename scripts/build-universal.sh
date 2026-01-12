@@ -59,3 +59,7 @@ for bundle in "${DIST_DIR}"/*.bundle; do
 done
 
 echo "Built ${OUTPUT_DIR}/${APP_NAME} (${ARCHES_VALUE})"
+
+if [[ "${IMSG_RPC_APP_SKIP:-}" != "1" ]]; then
+  "${ROOT}/scripts/update-rpc-app.sh"
+fi
