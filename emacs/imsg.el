@@ -393,6 +393,9 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
       (insert "Chats buffer\n")
       (insert "  RET open history\n")
       (insert "  c compose to chat\n\n")
+      (insert "Transient\n")
+      (insert "  o open at point\n")
+      (insert "  H history prompt\n")
       (insert "Compose keys\n")
       (insert "  C-c C-c send\n")
       (insert "  C-c C-k cancel\n")
@@ -724,8 +727,16 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
         (dolist (chat chats)
           (let* ((id (alist-get 'id chat))
                  (line (imsg--format-chat chat))
-                 (text (propertize line 'imsg-chat-id id 'mouse-face 'highlight)))
-            (insert text "\n")))
+                 (start (point)))
+            (insert line)
+            (make-text-button
+             start
+             (point)
+             'imsg-chat-id id
+             'action #'imsg--open-chat-button
+             'follow-link t)
+            (add-text-properties start (point) '(mouse-face highlight))
+            (insert "\n")))
         (goto-char (point-min))
         (setq buffer-read-only t)))
     (display-buffer buf)))
@@ -778,6 +789,12 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
   "Major mode for imsg chat lists."
   (setq buffer-read-only t))
 
+(defun imsg--open-chat-button (button)
+  "Open chat history from BUTTON."
+  (let ((id (button-get button 'imsg-chat-id)))
+    (when id
+      (imsg-history-interactive id imsg-default-history-limit))))
+
 (defvar imsg-history-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'imsg-history-compose)
@@ -799,6 +816,12 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     (if id
         (imsg-history-interactive id imsg-default-history-limit)
       (message "imsg: no chat id on this line"))))
+
+(defun imsg-chats-history-prompt ()
+  "Prompt for a chat ID and open its history."
+  (interactive)
+  (let ((chat-id (read-number "Chat ID: ")))
+    (imsg-history-interactive chat-id imsg-default-history-limit)))
 
 (defun imsg-chats-compose-at-point ()
   "Compose a message to the chat at point."
@@ -859,8 +882,10 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     ("s" "status" imsg-status)
     ("k" "stop" imsg-stop)]
    ["Chats/Messages"
-    ("c" "list chats" imsg-chats-list-interactive)
-    ("h" "history" imsg-history-interactive)]
+   ("c" "list chats" imsg-chats-list-interactive)
+    ("h" "history" imsg-history-interactive)
+    ("o" "open at point" imsg-chats-open-at-point)
+    ("H" "history prompt" imsg-chats-history-prompt)]
    ["Send/Watch"
     ("m" "send" imsg-send-interactive)
     ("C" "compose chat" imsg-compose-chat)
