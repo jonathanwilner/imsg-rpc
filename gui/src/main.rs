@@ -621,6 +621,41 @@ fn parse_notification_message(params: &Value) -> Option<MessageRow> {
     parse_message(message)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_chat_handles_minimal_fields() {
+        let value = serde_json::json!({
+            "id": 1,
+            "identifier": "+123",
+            "service": "iMessage",
+            "last_message_at": "2026-01-01T00:00:00Z",
+            "name": ""
+        });
+        let chat = parse_chat(&value).expect("chat");
+        assert_eq!(chat.id, 1);
+        assert_eq!(chat.identifier, "+123");
+        assert_eq!(chat.service, "iMessage");
+    }
+
+    #[test]
+    fn parse_message_handles_minimal_fields() {
+        let value = serde_json::json!({
+            "chat_id": 2,
+            "sender": "+123",
+            "text": "hello",
+            "created_at": "2026-01-01T00:00:00Z",
+            "is_from_me": false
+        });
+        let message = parse_message(&value).expect("message");
+        assert_eq!(message.chat_id, 2);
+        assert_eq!(message.sender, "+123");
+        assert_eq!(message.text, "hello");
+    }
+}
+
 fn main() -> iced::Result {
     let args = Args::parse();
     let flags = Flags {
