@@ -82,6 +82,12 @@ enum InputMode {
     SendDirectText,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FocusPane {
+    Chats,
+    Messages,
+}
+
 struct App {
     chats: Vec<Chat>,
     messages: Vec<Message>,
@@ -94,6 +100,8 @@ struct App {
     input_target: Option<String>,
     notify: bool,
     last_tick: Instant,
+    focus: FocusPane,
+    message_offset: usize,
 }
 
 impl App {
@@ -110,6 +118,8 @@ impl App {
             input_target: None,
             notify,
             last_tick: Instant::now(),
+            focus: FocusPane::Chats,
+            message_offset: 0,
         }
     }
 }
@@ -178,36 +188,21 @@ fn handle_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Resul
 fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
         KeyCode::Char('q') => return Ok(true),
+        KeyCode::Tab => {
+            app.focus = match app.focus {
+                FocusPane::Chats => FocusPane::Messages,
+                FocusPane::Messages => FocusPane::Chats,
+            };
+        }
         KeyCode::Char('r') => request_chats(client, app),
-        KeyCode::Up => {
-            if app.selected > 0 {
-                app.selected -= 1;
-            }
-        }
-        KeyCode::Down => {
-            if app.selected + 1 < app.chats.len() {
-                app.selected += 1;
-            }
-        }
-        KeyCode::Enter => {
-            if let Some(chat) = app.chats.get(app.selected) {
-                request_history(client, app, chat.id);
-            }
-        }
-        KeyCode::Char('w') => {
-            if let Some(chat) = app.chats.get(app.selected) {
-                toggle_watch(client, app, chat.id);
-            }
-        }
-        KeyCode::Char('s') => {
-            if app.chats.get(app.selected).is_some() {
-                app.input_mode = InputMode::SendText;
-                app.input.clear();
-                app.status = "send: enter text (enter to send, esc to cancel)".to_string();
-            } else {
-                app.status = "no chat selected".to_string();
-            }
-        }
+        KeyCode::Up | KeyCode::Down => handle_arrow_navigation(app, key.code),
+        KeyCode::Char('k') => handle_scroll_messages(app, -1),
+        KeyCode::Char('j') => handle_scroll_messages(app, 1),
+        KeyCode::PageUp => handle_scroll_messages(app, -10),
+        KeyCode::PageDown => handle_scroll_messages(app, 10),
+        KeyCode::Enter => handle_enter(client, app),
+        KeyCode::Char('w') => handle_watch(client, app),
+        KeyCode::Char('s') => handle_send(app),
         KeyCode::Char('n') => {
             app.input_mode = InputMode::SendTo;
             app.input.clear();
@@ -218,6 +213,67 @@ fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_arrow_navigation(app: &mut App, code: KeyCode) {
+    match app.focus {
+        FocusPane::Chats => match code {
+            KeyCode::Up => {
+                if app.selected > 0 {
+                    app.selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if app.selected + 1 < app.chats.len() {
+                    app.selected += 1;
+                }
+            }
+            _ => {}
+        },
+        FocusPane::Messages => match code {
+            KeyCode::Up => handle_scroll_messages(app, -1),
+            KeyCode::Down => handle_scroll_messages(app, 1),
+            _ => {}
+        },
+    }
+}
+
+fn handle_scroll_messages(app: &mut App, delta: isize) {
+    if app.messages.is_empty() {
+        return;
+    }
+    let max_offset = app.messages.len().saturating_sub(1);
+    let current = app.message_offset as isize;
+    let next = (current + delta).clamp(0, max_offset as isize) as usize;
+    app.message_offset = next;
+}
+
+fn handle_enter(client: &mut RpcClient, app: &mut App) {
+    match app.focus {
+        FocusPane::Chats => {
+            if let Some(chat) = app.chats.get(app.selected) {
+                request_history(client, app, chat.id);
+                app.message_offset = 0;
+            }
+        }
+        FocusPane::Messages => {}
+    }
+}
+
+fn handle_watch(client: &mut RpcClient, app: &mut App) {
+    if let Some(chat) = app.chats.get(app.selected) {
+        toggle_watch(client, app, chat.id);
+    }
+}
+
+fn handle_send(app: &mut App) {
+    if app.chats.get(app.selected).is_some() {
+        app.input_mode = InputMode::SendText;
+        app.input.clear();
+        app.status = "send: enter text (enter to send, esc to cancel)".to_string();
+    } else {
+        app.status = "no chat selected".to_string();
+    }
 }
 
 fn handle_input_to(_client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Result<bool> {
@@ -401,6 +457,7 @@ fn handle_response(app: &mut App, pending: PendingRequest, result: Value) {
                 .map(|list| list.iter().filter_map(parse_message).collect())
                 .unwrap_or_else(Vec::new);
             app.messages = messages;
+            app.message_offset = 0;
             app.status = "history loaded".to_string();
         }
         PendingRequest::WatchSubscribe => {
@@ -525,14 +582,19 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         })
         .collect();
 
+    let chats_title = match app.focus {
+        FocusPane::Chats => "Chats *",
+        FocusPane::Messages => "Chats",
+    };
     let chats_list = List::new(chats)
-        .block(Block::default().title("Chats").borders(Borders::ALL))
+        .block(Block::default().title(chats_title).borders(Borders::ALL))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD))
         .highlight_symbol("➤ ");
     frame.render_stateful_widget(chats_list, body[0], &mut app_state_list(app));
 
     let mut message_lines = Vec::new();
-    for message in &app.messages {
+    let start = app.message_offset.min(app.messages.len());
+    for message in app.messages.iter().skip(start) {
         let direction = if message.is_from_me { "sent" } else { "recv" };
         let header = format!(
             "{} [{}] {}:",
@@ -542,8 +604,12 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         message_lines.push(Line::from(vec![Span::raw(message.text.clone())]));
         message_lines.push(Line::from(vec![Span::raw("")]));
     }
+    let messages_title = match app.focus {
+        FocusPane::Messages => "Messages *",
+        FocusPane::Chats => "Messages",
+    };
     let messages = Paragraph::new(Text::from(message_lines))
-        .block(Block::default().title("Messages").borders(Borders::ALL))
+        .block(Block::default().title(messages_title).borders(Borders::ALL))
         .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(messages, body[1]);
 
