@@ -63,6 +63,31 @@ Params (group):
 Result:
 - `{ "ok": true }`
 
+### `reactions.send`
+Params:
+- `guid` (string, required; message GUID to react to)
+- `reaction` (string, required; tapback name or emoji)
+- `chat_id` / `chat_identifier` / `chat_guid` (optional; used to resolve chat context)
+Result:
+- `{ "ok": true }`
+
+### `contacts.search`
+Params:
+- `query` (string, required)
+- `limit` (int, default 10)
+Result:
+- `{ "matches": [ContactMatch] }`
+Notes:
+- Only available on macOS hosts with Contacts access granted.
+
+### `contacts.resolve`
+Params:
+- `handles` (array, required)
+Result:
+- `{ "contacts": [Contact] }`
+Notes:
+- Only available on macOS hosts with Contacts access granted.
+
 ## Objects
 
 ### Chat
@@ -91,6 +116,22 @@ Result:
 - `chat_name`
 - `participants`
 - `is_group`
+
+### Reaction
+- `id` (rowid)
+- `type` (string, "love"/"like"/"dislike"/"laugh"/"emphasis"/"question"/"custom")
+- `emoji` (string)
+- `sender` (string)
+- `is_from_me` (bool)
+- `created_at` (ISO8601)
+
+### ContactMatch
+- `name` (string)
+- `handles` (array)
+
+### Contact
+- `handle` (string)
+- `name` (string)
 
 ## Examples
 

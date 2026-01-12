@@ -62,6 +62,18 @@ public enum ReactionType: Sendable, Equatable, Hashable {
     }
   }
 
+  public var appleScriptName: String {
+    switch self {
+    case .love: return "love"
+    case .like: return "like"
+    case .dislike: return "dislike"
+    case .laugh: return "laugh"
+    case .emphasis: return "emphasis"
+    case .question: return "question"
+    case .custom(let emoji): return emoji
+    }
+  }
+
   /// Emoji representation of the reaction
   public var emoji: String {
     switch self {
@@ -181,6 +193,25 @@ public struct Reaction: Sendable, Equatable {
     self.isFromMe = isFromMe
     self.date = date
     self.associatedMessageID = associatedMessageID
+  }
+}
+
+public struct ReactionSendOptions: Sendable, Equatable {
+  public let messageGUID: String
+  public let reactionType: ReactionType
+  public let chatIdentifier: String
+  public let chatGUID: String
+
+  public init(
+    messageGUID: String,
+    reactionType: ReactionType,
+    chatIdentifier: String,
+    chatGUID: String
+  ) {
+    self.messageGUID = messageGUID
+    self.reactionType = reactionType
+    self.chatIdentifier = chatIdentifier
+    self.chatGUID = chatGUID
   }
 }
 

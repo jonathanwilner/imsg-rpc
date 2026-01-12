@@ -361,3 +361,69 @@ func rpcWatchUnsubscribeRequiresSubscription() async throws {
   let error = output.errors.first?["error"] as? [String: Any]
   #expect(int64Value(error?["code"]) == -32602)
 }
+
+@Test
+func rpcContactsSearchReturnsMatches() async throws {
+  let store = try RPCTestDatabase.makeStore()
+  let output = TestRPCOutput()
+  let server = RPCServer(
+    store: store,
+    verbose: false,
+    output: output,
+    contactSearch: { _, _ in
+      [ContactMatch(name: "Alice", handles: ["+15551234567"])]
+    }
+  )
+
+  let line = #"{"jsonrpc":"2.0","id":13,"method":"contacts.search","params":{"query":"Ali"}}"#
+  await server.handleLineForTesting(line)
+
+  let result = output.responses.first?["result"] as? [String: Any]
+  let matches = result?["matches"] as? [[String: Any]] ?? []
+  #expect(matches.count == 1)
+  #expect(matches.first?["name"] as? String == "Alice")
+}
+
+@Test
+func rpcContactsResolveReturnsContacts() async throws {
+  let store = try RPCTestDatabase.makeStore()
+  let output = TestRPCOutput()
+  let server = RPCServer(
+    store: store,
+    verbose: false,
+    output: output,
+    contactResolve: { handles in
+      Dictionary(uniqueKeysWithValues: handles.map { ($0, "Resolved \($0)") })
+    }
+  )
+
+  let line =
+    #"{"jsonrpc":"2.0","id":14,"method":"contacts.resolve","params":{"handles":["+15551234567"]}}"#
+  await server.handleLineForTesting(line)
+
+  let result = output.responses.first?["result"] as? [String: Any]
+  let contacts = result?["contacts"] as? [[String: Any]] ?? []
+  #expect(contacts.count == 1)
+  #expect(contacts.first?["handle"] as? String == "+15551234567")
+}
+
+@Test
+func rpcReactionSendResolvesChatID() async throws {
+  let store = try RPCTestDatabase.makeStore()
+  let output = TestRPCOutput()
+  var captured: ReactionSendOptions?
+  let server = RPCServer(
+    store: store,
+    verbose: false,
+    output: output,
+    sendReaction: { options in captured = options }
+  )
+
+  let line =
+    #"{"jsonrpc":"2.0","id":15,"method":"reactions.send","params":{"guid":"ABC","reaction":"love","chat_id":1}}"#
+  await server.handleLineForTesting(line)
+
+  #expect(captured?.chatIdentifier == "iMessage;+;chat123")
+  #expect(captured?.chatGUID == "iMessage;+;chat123")
+  #expect(captured?.messageGUID == "ABC")
+}

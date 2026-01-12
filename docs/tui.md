@@ -74,11 +74,16 @@ nix-shell
 
 - `q` quit
 - `r` refresh chats
-- `Up/Down` select chat
+- `Tab` toggle focus between chats/messages
+- `Up/Down` select chat or message
+- `j/k` scroll messages
+- `PageUp/PageDown` scroll messages faster
 - `Enter` load history for selected chat
 - `w` toggle watch for selected chat
 - `s` send message to selected chat
 - `n` new direct message (prompt for recipient + text)
+- `R` react to selected message (prompt for reaction)
+- `o` open the first URL in the selected message
 - `Esc` cancel input
 
 ## Notifications

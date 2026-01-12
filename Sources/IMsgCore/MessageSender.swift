@@ -78,6 +78,20 @@ public struct MessageSender {
     try sendViaAppleScript(resolved, chatTarget: chatTarget, useChat: useChat)
   }
 
+  public func sendReaction(_ options: ReactionSendOptions) throws {
+    let chatTarget = resolveReactionChatTarget(options)
+    guard !chatTarget.isEmpty else {
+      throw IMsgError.invalidChatTarget("missing chat target for reaction")
+    }
+    let script = reactionAppleScript()
+    let arguments = [
+      chatTarget,
+      options.messageGUID,
+      options.reactionType.appleScriptName,
+    ]
+    try runner(script, arguments)
+  }
+
   private func stageAttachment(at path: String) throws -> String {
     let expandedPath = (path as NSString).expandingTildeInPath
     let sourceURL = URL(fileURLWithPath: expandedPath)
@@ -171,6 +185,22 @@ public struct MessageSender {
       """
   }
 
+  private func reactionAppleScript() -> String {
+    return """
+      on run argv
+          set chatId to item 1 of argv
+          set messageGuid to item 2 of argv
+          set reactionName to item 3 of argv
+
+          tell application "Messages"
+              set targetChat to chat id chatId
+              set targetMessage to first message of targetChat whose id is messageGuid
+              set reaction of targetMessage to reactionName
+          end tell
+      end run
+      """
+  }
+
   private func resolveChatTarget(_ options: inout MessageSendOptions) -> String {
     let guid = options.chatGUID.trimmingCharacters(in: .whitespacesAndNewlines)
     if !guid.isEmpty {
@@ -184,6 +214,18 @@ public struct MessageSender {
       if options.recipient.isEmpty {
         options.recipient = identifier
       }
+      return ""
+    }
+    return identifier
+  }
+
+  private func resolveReactionChatTarget(_ options: ReactionSendOptions) -> String {
+    let guid = options.chatGUID.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !guid.isEmpty {
+      return guid
+    }
+    let identifier = options.chatIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    if identifier.isEmpty {
       return ""
     }
     return identifier

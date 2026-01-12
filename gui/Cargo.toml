@@ -8,3 +8,4 @@ clap = { version = "4.5.23", features = ["derive"] }
 iced = { version = "0.12.1", features = ["tokio"] }
 notify-rust = "4.11.7"
 serde_json = "1.0.135"
+linkify = "0.10.0"

@@ -550,6 +550,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "crossterm",
+ "linkify",
  "notify-rust",
  "ratatui",
  "serde",
@@ -602,6 +603,15 @@ name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
+
+[[package]]
+name = "linkify"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dfa36d52c581e9ec783a7ce2a5e0143da6237be5811a0b3153fedfdbe9f780"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "linux-raw-sys"

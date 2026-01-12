@@ -74,7 +74,10 @@ nix-shell
 - Watch: toggle watch for selected chat
 - Send: send to selected chat
 - Direct: enter recipient, then message
+- React: send a reaction for the selected message
 - Cancel: clear current input
+- Click a message bubble to select it
+- Click URL chips under a message to open in your browser (`xdg-open` on Linux, `open` on macOS)
 
 ## Notifications
 

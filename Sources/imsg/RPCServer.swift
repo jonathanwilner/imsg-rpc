@@ -14,6 +14,9 @@ final class RPCServer {
   private let cache: ChatCache
   private let verbose: Bool
   private let sendMessage: (MessageSendOptions) throws -> Void
+  private let sendReaction: (ReactionSendOptions) throws -> Void
+  private let contactSearch: (String, Int) throws -> [ContactMatch]
+  private let contactResolve: ([String]) throws -> [String: String]
   private var nextSubscriptionID = 1
   private var subscriptions: [Int: Task<Void, Never>] = [:]
 
@@ -21,7 +24,16 @@ final class RPCServer {
     store: MessageStore,
     verbose: Bool,
     output: RPCOutput = RPCWriter(),
-    sendMessage: @escaping (MessageSendOptions) throws -> Void = { try MessageSender().send($0) }
+    sendMessage: @escaping (MessageSendOptions) throws -> Void = { try MessageSender().send($0) },
+    sendReaction: @escaping (ReactionSendOptions) throws -> Void = {
+      try MessageSender().sendReaction($0)
+    },
+    contactSearch: @escaping (String, Int) throws -> [ContactMatch] = { query, limit in
+      try ContactLookup.search(query: query, limit: limit)
+    },
+    contactResolve: @escaping ([String]) throws -> [String: String] = { handles in
+      try ContactLookup.resolve(handles: handles)
+    }
   ) {
     self.store = store
     self.watcher = MessageWatcher(store: store)
@@ -29,6 +41,9 @@ final class RPCServer {
     self.verbose = verbose
     self.output = output
     self.sendMessage = sendMessage
+    self.sendReaction = sendReaction
+    self.contactSearch = contactSearch
+    self.contactResolve = contactResolve
   }
 
   func run() async throws {
@@ -188,6 +203,12 @@ final class RPCServer {
         respond(id: id, result: ["ok": true])
       case "send":
         try handleSend(params: params, id: id)
+      case "reactions.send":
+        try handleReaction(params: params, id: id)
+      case "contacts.search":
+        try handleContactSearch(params: params, id: id)
+      case "contacts.resolve":
+        try handleContactResolve(params: params, id: id)
       default:
         output.sendError(id: id, error: RPCError.methodNotFound(method))
       }
@@ -263,6 +284,76 @@ final class RPCServer {
       )
     )
     respond(id: id, result: ["ok": true])
+  }
+
+  private func handleReaction(params: [String: Any], id: Any?) throws {
+    guard let guid = stringParam(params["guid"]), !guid.isEmpty else {
+      throw RPCError.invalidParams("guid is required")
+    }
+    guard let reactionString = stringParam(params["reaction"]),
+      let reactionType = ReactionType.parse(reactionString)
+    else {
+      throw RPCError.invalidParams("reaction is required")
+    }
+
+    let chatID = int64Param(params["chat_id"])
+    let chatIdentifier = stringParam(params["chat_identifier"]) ?? ""
+    let chatGUID = stringParam(params["chat_guid"]) ?? ""
+    var resolvedChatIdentifier = chatIdentifier
+    var resolvedChatGUID = chatGUID
+
+    if let chatID {
+      guard let info = try cache.info(chatID: chatID) else {
+        throw RPCError.invalidParams("unknown chat_id \(chatID)")
+      }
+      resolvedChatIdentifier = info.identifier
+      resolvedChatGUID = info.guid
+    } else if resolvedChatIdentifier.isEmpty && resolvedChatGUID.isEmpty {
+      if let message = try store.message(guid: guid),
+        let info = try cache.info(chatID: message.chatID)
+      {
+        resolvedChatIdentifier = info.identifier
+        resolvedChatGUID = info.guid
+      }
+    }
+
+    if resolvedChatIdentifier.isEmpty && resolvedChatGUID.isEmpty {
+      throw RPCError.invalidParams("chat target is required")
+    }
+
+    try sendReaction(
+      ReactionSendOptions(
+        messageGUID: guid,
+        reactionType: reactionType,
+        chatIdentifier: resolvedChatIdentifier,
+        chatGUID: resolvedChatGUID
+      )
+    )
+    respond(id: id, result: ["ok": true])
+  }
+
+  private func handleContactSearch(params: [String: Any], id: Any?) throws {
+    guard let query = stringParam(params["query"]), !query.isEmpty else {
+      throw RPCError.invalidParams("query is required")
+    }
+    let limit = intParam(params["limit"]) ?? 10
+    let matches = try contactSearch(query, max(limit, 1))
+    let payloads = matches.map { match in
+      ["name": match.name, "handles": match.handles]
+    }
+    respond(id: id, result: ["matches": payloads])
+  }
+
+  private func handleContactResolve(params: [String: Any], id: Any?) throws {
+    let handles = stringArrayParam(params["handles"])
+    if handles.isEmpty {
+      throw RPCError.invalidParams("handles is required")
+    }
+    let resolved = try contactResolve(handles)
+    let payloads = resolved.map { handle, name in
+      ["handle": handle, "name": name]
+    }
+    respond(id: id, result: ["contacts": payloads])
   }
 
 }

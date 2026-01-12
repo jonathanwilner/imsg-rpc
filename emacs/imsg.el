@@ -90,6 +90,22 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
 (defvar imsg--subscriptions (make-hash-table :test 'equal))
 (defvar imsg--subscription-tokens (make-hash-table :test 'equal))
 (defvar imsg--desired-subscriptions (make-hash-table :test 'equal))
+(defvar imsg--contact-cache (make-hash-table :test 'equal))
+
+(defface imsg-sent-face
+  '((t :foreground "white" :background "DodgerBlue3"))
+  "Face for sent message text."
+  :group 'imsg)
+
+(defface imsg-recv-face
+  '((t :foreground "black" :background "gray90"))
+  "Face for received message text."
+  :group 'imsg)
+
+(defface imsg-reply-face
+  '((t :foreground "gray50"))
+  "Face for reply indicators."
+  :group 'imsg)
 
 (defcustom imsg-auto-reconnect t
   "When non-nil, automatically restart the RPC process and resubscribe."
@@ -241,12 +257,13 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
         (when callback
           (funcall callback message))
         (when message
+          (imsg--cache-contacts (list (alist-get 'sender message)))
           (when imsg-notify-enabled
             (funcall imsg-notify-function message))
           (run-hook-with-args 'imsg-on-message-hook message))))))
 
 (defun imsg--default-notify (message)
-  (let* ((sender (or (alist-get 'sender message) ""))
+  (let* ((sender (imsg--sender-display message))
          (text (or (alist-get 'text message) ""))
          (title (if (string-empty-p sender) "iMessage" sender)))
     (if (fboundp 'notifications-notify)
@@ -255,6 +272,33 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
          :body text
          :app-name "imsg")
       (message "imsg: %s %s" title text))))
+
+(defun imsg-contacts-search (query &optional limit)
+  "Search contacts by QUERY."
+  (let ((params `(("query" . ,query))))
+    (when limit (setq params (append params `(("limit" . ,limit)))))
+    (imsg-request-sync "contacts.search" params)))
+
+(defun imsg-contacts-resolve (handles)
+  "Resolve HANDLE list to contact names."
+  (imsg-request-sync "contacts.resolve" `(("handles" . ,handles))))
+
+(defun imsg--cache-contacts (handles)
+  (let* ((unknown (cl-remove-if (lambda (h) (gethash h imsg--contact-cache)) handles)))
+    (when unknown
+      (condition-case _err
+          (let* ((result (imsg-contacts-resolve unknown))
+                 (contacts (alist-get 'contacts result)))
+            (dolist (entry contacts)
+              (let ((handle (alist-get 'handle entry))
+                    (name (alist-get 'name entry)))
+                (when (and handle name)
+                  (puthash handle name imsg--contact-cache)))))
+        (error nil)))))
+
+(defun imsg--sender-display (message)
+  (let* ((sender (or (alist-get 'sender message) "")))
+    (or (gethash sender imsg--contact-cache) sender)))
 
 (defvar-local imsg--compose-target nil)
 
@@ -273,8 +317,25 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
     (pop-to-buffer buf)))
 
 (defun imsg-compose-to (to)
-  "Compose a direct message to TO."
-  (interactive "sTo (handle/number): ")
+  "Compose a direct message to TO or a contact name."
+  (interactive
+   (list
+    (let* ((query (read-string "To (handle/number or name): "))
+           (matches (condition-case _err
+                        (alist-get 'matches (imsg-contacts-search query 10))
+                      (error nil)))
+           (choices (and matches
+                         (cl-mapcan
+                          (lambda (match)
+                            (let ((name (alist-get 'name match))
+                                  (handles (alist-get 'handles match)))
+                              (mapcar (lambda (handle)
+                                        (cons (format "%s <%s>" name handle) handle))
+                                      handles)))
+                          matches))))
+      (if (and choices (not (string-empty-p query)))
+          (cdr (assoc (completing-read "Select contact: " choices nil t) choices))
+        query))))
   (let ((buf (get-buffer-create "*imsg-compose*")))
     (with-current-buffer buf
       (erase-buffer)
@@ -311,6 +372,35 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
 
 (define-key imsg-compose-mode-map (kbd "C-c C-c") #'imsg-compose-send)
 (define-key imsg-compose-mode-map (kbd "C-c C-k") #'imsg-compose-cancel)
+(define-key imsg-compose-mode-map (kbd "C-c C-e") #'imsg-compose-insert-emoji)
+(define-key imsg-compose-mode-map (kbd "C-c C-r") #'imsg-compose-send-reaction)
+(define-key imsg-compose-mode-map (kbd "C-c C-t") #'imsg-compose-menu)
+
+(transient-define-prefix imsg-compose-menu ()
+  "Compose menu."
+  [["Compose"
+    ("s" "send" imsg-compose-send)
+    ("e" "emoji" imsg-compose-insert-emoji)
+    ("r" "react" imsg-compose-send-reaction)
+    ("c" "cancel" imsg-compose-cancel)]])
+
+(defun imsg-compose-insert-emoji ()
+  "Insert an emoji via the built-in chooser."
+  (interactive)
+  (if (fboundp 'emoji-search)
+      (call-interactively 'emoji-search)
+    (insert (read-string "Emoji: "))))
+
+(defun imsg--reaction-choice ()
+  (completing-read "Reaction: " '("like" "love" "laugh" "emphasis" "question" "dislike") nil nil))
+
+(defun imsg-compose-send-reaction ()
+  "Send a reaction to a message GUID."
+  (interactive)
+  (let ((guid (read-string "Message GUID: "))
+        (reaction (imsg--reaction-choice)))
+    (imsg-request-sync "reactions.send" `(("guid" . ,guid) ("reaction" . ,reaction)))
+    (message "imsg: reaction sent")))
 
 (defun imsg--resubscribe-all ()
   "Resubscribe to all desired subscriptions after reconnect."
@@ -470,11 +560,45 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
           (or (alist-get 'last_message_at chat) "")))
 
 (defun imsg--format-message (message)
-  (format "%s [%s] %s: %s"
-          (or (alist-get 'created_at message) "")
-          (if (alist-get 'is_from_me message) "sent" "recv")
-          (or (alist-get 'sender message) "")
-          (or (alist-get 'text message) "")))
+  (let* ((is-from-me (alist-get 'is_from_me message))
+         (direction (if is-from-me "sent" "recv"))
+         (sender (imsg--sender-display message))
+         (text (or (alist-get 'text message) ""))
+         (timestamp (or (alist-get 'created_at message) ""))
+         (reply (alist-get 'reply_to_guid message))
+         (reactions (alist-get 'reactions message))
+         (face (if is-from-me 'imsg-sent-face 'imsg-recv-face))
+         (reply-line (when reply
+                       (propertize (format "reply to %s" reply) 'face 'imsg-reply-face)))
+         (reaction-line (when reactions
+                          (let ((summary (imsg--reaction-summary reactions)))
+                            (when summary
+                              (propertize (format "reactions: %s" summary) 'face 'imsg-reply-face))))))
+    (string-join
+     (delq nil
+           (list
+            (propertize (format "%s [%s] %s:" timestamp direction sender) 'face face)
+            reply-line
+            (propertize text 'face face)
+            reaction-line))
+     "\n")))
+
+(defun imsg--reaction-summary (reactions)
+  "Build a compact reaction summary from REACTIONS."
+  (let ((counts (make-hash-table :test 'equal)))
+    (dolist (reaction reactions)
+      (let ((emoji (or (alist-get 'emoji reaction) "")))
+        (unless (string-empty-p emoji)
+          (puthash emoji (1+ (gethash emoji counts 0)) counts))))
+    (let (parts)
+      (maphash (lambda (emoji count)
+                 (push (if (> count 1)
+                           (format "%s %d" emoji count)
+                         emoji)
+                       parts))
+               counts)
+      (when parts
+        (string-join (sort parts #'string<) " ")))))
 
 (defun imsg--display-lines (buffer-name lines)
   (let ((buf (get-buffer-create buffer-name)))
@@ -483,6 +607,7 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
       (erase-buffer)
       (dolist (line lines)
         (insert line "\n"))
+      (goto-address-mode 1)
       (setq buffer-read-only t))
     (display-buffer buf)))
 
@@ -499,6 +624,7 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
   (interactive "nChat ID: \nnLimit: ")
   (let* ((result (imsg-messages-history chat-id limit))
          (messages (alist-get 'messages result)))
+    (imsg--cache-contacts (delete-dups (mapcar (lambda (m) (alist-get 'sender m)) messages)))
     (imsg--display-lines "*imsg-history*"
                          (mapcar #'imsg--format-message messages))))
 
@@ -524,7 +650,9 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     (imsg-watch-subscribe
      params
      (lambda (message)
+       (imsg--cache-contacts (list (alist-get 'sender message)))
        (with-current-buffer (get-buffer-create imsg--watch-buffer)
+         (goto-address-mode 1)
          (goto-char (point-max))
          (insert (imsg--format-message message) "\n")))
      (lambda (subscription err)

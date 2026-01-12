@@ -2,6 +2,71 @@ import Foundation
 import SQLite
 
 extension MessageStore {
+  public func message(guid: String) throws -> Message? {
+    let bodyColumn = hasAttributedBody ? "m.attributedBody" : "NULL"
+    let guidColumn = hasReactionColumns ? "m.guid" : "NULL"
+    let associatedGuidColumn = hasReactionColumns ? "m.associated_message_guid" : "NULL"
+    let associatedTypeColumn = hasReactionColumns ? "m.associated_message_type" : "NULL"
+    let destinationCallerColumn = hasDestinationCallerID ? "m.destination_caller_id" : "NULL"
+    let audioMessageColumn = hasAudioMessageColumn ? "m.is_audio_message" : "0"
+    let sql = """
+      SELECT m.ROWID, cmj.chat_id, m.handle_id, h.id, IFNULL(m.text, '') AS text, m.date, m.is_from_me, m.service,
+             \(audioMessageColumn) AS is_audio_message, \(destinationCallerColumn) AS destination_caller_id,
+             \(guidColumn) AS guid, \(associatedGuidColumn) AS associated_guid, \(associatedTypeColumn) AS associated_type,
+             (SELECT COUNT(*) FROM message_attachment_join maj WHERE maj.message_id = m.ROWID) AS attachments,
+             \(bodyColumn) AS body
+      FROM message m
+      LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+      LEFT JOIN handle h ON m.handle_id = h.ROWID
+      WHERE m.guid = ?
+      LIMIT 1
+      """
+    return try withConnection { db in
+      for row in try db.prepare(sql, guid) {
+        let rowID = int64Value(row[0]) ?? 0
+        let chatID = int64Value(row[1]) ?? 0
+        let handleID = int64Value(row[2])
+        var sender = stringValue(row[3])
+        let text = stringValue(row[4])
+        let date = appleDate(from: int64Value(row[5]))
+        let isFromMe = boolValue(row[6])
+        let service = stringValue(row[7])
+        let isAudioMessage = boolValue(row[8])
+        let destinationCallerID = stringValue(row[9])
+        if sender.isEmpty && !destinationCallerID.isEmpty {
+          sender = destinationCallerID
+        }
+        let messageGUID = stringValue(row[10])
+        let associatedGuid = stringValue(row[11])
+        let associatedType = intValue(row[12])
+        let attachments = intValue(row[13]) ?? 0
+        let body = dataValue(row[14])
+        var resolvedText = text.isEmpty ? TypedStreamParser.parseAttributedBody(body) : text
+        if isAudioMessage, let transcription = try audioTranscription(for: rowID) {
+          resolvedText = transcription
+        }
+        let replyToGUID = replyToGUID(
+          associatedGuid: associatedGuid,
+          associatedType: associatedType
+        )
+        return Message(
+          rowID: rowID,
+          chatID: chatID,
+          sender: sender,
+          text: resolvedText,
+          date: date,
+          isFromMe: isFromMe,
+          service: service,
+          handleID: handleID,
+          attachmentsCount: attachments,
+          guid: messageGUID,
+          replyToGUID: replyToGUID
+        )
+      }
+      return nil
+    }
+  }
+
   public func messages(chatID: Int64, limit: Int) throws -> [Message] {
     let bodyColumn = hasAttributedBody ? "m.attributedBody" : "NULL"
     let guidColumn = hasReactionColumns ? "m.guid" : "NULL"
