@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.jonathan.imsg.rpc.socat</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>IMSG_BIN</key>
+      <string>/Users/jonathan/bin/imsg</string>
+      <key>IMSG_PORT</key>
+      <string>57999</string>
+      <key>SOCAT_BIN</key>
+      <string>/opt/homebrew/bin/socat</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/jonathan/src/imsg/scripts/start-rpc-socat.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/jonathan/Library/Logs/imsg-rpc-socat.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jonathan/Library/Logs/imsg-rpc-socat.err.log</string>
+  </dict>
+</plist>

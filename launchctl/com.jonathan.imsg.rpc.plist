@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.jonathan.imsg.rpc</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/jonathan/bin/imsg</string>
+      <string>rpc</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/jonathan/Library/Logs/imsg-rpc.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jonathan/Library/Logs/imsg-rpc.err.log</string>
+  </dict>
+</plist>

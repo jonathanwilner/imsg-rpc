@@ -72,6 +72,12 @@ make test
 
 Note: `make test` applies a small patch to SQLite.swift to silence a SwiftPM warning about `PrivacyInfo.xcprivacy`.
 
+## Remote Emacs client
+See `docs/remote-emacs.md` for the TRAMP/SSH setup, LaunchAgent, and remote test flow.
+
+## TUI client
+See `docs/tui.md` for the Ratatui-based terminal client (local or TCP/socat).
+
 ## Linting & formatting
 ```bash
 make lint

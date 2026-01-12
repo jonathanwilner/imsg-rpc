@@ -1,0 +1,12 @@
+[package]
+name = "imsg-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.23", features = ["derive"] }
+ratatui = "0.27.0"
+crossterm = "0.27.0"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.135"
+notify-rust = "4.11.5"
