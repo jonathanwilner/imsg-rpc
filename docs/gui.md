@@ -37,6 +37,36 @@ Optional database path:
 ./gui/target/release/imsg-gui --transport local --db ~/Library/Messages/chat.db
 ```
 
+## Nix build (flake)
+
+From `gui/`:
+
+```
+nix build .#
+```
+
+Run the built binary:
+
+```
+./result/bin/imsg-gui
+```
+
+Dev shell:
+
+```
+nix develop
+```
+
+This uses `rustc`/`cargo` from `nixpkgs` (no `rust-bin` overlay required).
+
+## Nix build (shell.nix)
+
+From `gui/`:
+
+```
+nix-shell
+```
+
 ## Controls
 
 - Refresh: reload chat list

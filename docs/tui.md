@@ -60,6 +60,8 @@ Dev shell:
 nix develop
 ```
 
+This uses `rustc`/`cargo` from `nixpkgs` (no `rust-bin` overlay required).
+
 ## Nix build (shell.nix)
 
 From `tui/`:

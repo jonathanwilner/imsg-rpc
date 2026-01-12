@@ -1,5 +1,5 @@
 {
-  description = "imsg-tui development environment";
+  description = "imsg-gui development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -17,7 +17,7 @@
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "imsg-tui";
+            pname = "imsg-gui";
             version = "0.1.0";
             src = ./.;
             cargoLock = {
