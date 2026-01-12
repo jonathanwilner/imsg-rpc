@@ -290,7 +290,7 @@ fn handle_input_to(_client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io:
                 app.input_target = Some(app.input.trim().to_string());
                 app.input.clear();
                 app.input_mode = InputMode::SendDirectText;
-                app.status = "send: enter text".to_string();
+                app.status = "send: enter text (enter to send, esc to cancel)".to_string();
             }
         }
         KeyCode::Backspace => {

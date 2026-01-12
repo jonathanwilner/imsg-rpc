@@ -2,7 +2,8 @@ use clap::{Parser, ValueEnum};
 use iced::{
     alignment, executor, theme,
     widget::{
-        button, column, container, row, scrollable, text, text_input, Column, Container,
+        button, column, container, row, scrollable, text, text_editor, text_input, Column,
+        Container,
     },
     Application, Command, Element, Length, Settings, Subscription, Theme,
 };
@@ -81,6 +82,7 @@ enum AppMessage {
     StartSend,
     StartDirect,
     InputChanged(String),
+    ComposeAction(text_editor::Action),
     SubmitInput,
     CancelInput,
 }
@@ -95,6 +97,7 @@ struct App {
     input_mode: InputMode,
     input_value: String,
     input_target: Option<String>,
+    compose_content: text_editor::Content,
     status: String,
     notify: bool,
     last_tick: Instant,
@@ -129,6 +132,7 @@ impl App {
             input_mode: InputMode::None,
             input_value: String::new(),
             input_target: None,
+            compose_content: text_editor::Content::new(),
             status,
             notify: flags.notify,
             last_tick: Instant::now(),
@@ -360,6 +364,7 @@ impl Application for App {
             AppMessage::StartSend => {
                 self.input_mode = InputMode::SendChat;
                 self.input_value.clear();
+                self.compose_content = text_editor::Content::new();
                 self.status = "send: enter message".to_string();
             }
             AppMessage::StartDirect => {
@@ -371,17 +376,21 @@ impl Application for App {
             AppMessage::InputChanged(value) => {
                 self.input_value = value;
             }
+            AppMessage::ComposeAction(action) => {
+                self.compose_content.perform(action);
+            }
             AppMessage::SubmitInput => match self.input_mode {
                 InputMode::None => {}
                 InputMode::SendChat => {
                     if let Some(chat) = self.chats.get(self.selected) {
-                        let text = self.input_value.trim().to_string();
+                        let text = self.compose_content.text().trim().to_string();
                         if !text.is_empty() {
                             self.request_send_chat(chat.id, &text);
                         }
                     }
                     self.input_mode = InputMode::None;
                     self.input_value.clear();
+                    self.compose_content = text_editor::Content::new();
                 }
                 InputMode::DirectTo => {
                     let target = self.input_value.trim().to_string();
@@ -389,11 +398,12 @@ impl Application for App {
                         self.input_target = Some(target);
                         self.input_value.clear();
                         self.input_mode = InputMode::DirectText;
+                        self.compose_content = text_editor::Content::new();
                         self.status = "send: enter message".to_string();
                     }
                 }
                 InputMode::DirectText => {
-                    let text = self.input_value.trim().to_string();
+                    let text = self.compose_content.text().trim().to_string();
                     if let Some(target) = self.input_target.clone() {
                         if !text.is_empty() {
                             self.request_send_to(&target, &text);
@@ -402,12 +412,14 @@ impl Application for App {
                     self.input_mode = InputMode::None;
                     self.input_target = None;
                     self.input_value.clear();
+                    self.compose_content = text_editor::Content::new();
                 }
             },
             AppMessage::CancelInput => {
                 self.input_mode = InputMode::None;
                 self.input_value.clear();
                 self.input_target = None;
+                self.compose_content = text_editor::Content::new();
                 self.status = "cancelled".to_string();
             }
         }
@@ -476,25 +488,36 @@ impl Application for App {
         ]
         .spacing(10);
 
-        let input_placeholder = match self.input_mode {
-            InputMode::None => "select Send or Direct",
-            InputMode::SendChat => "message",
-            InputMode::DirectTo => "recipient",
-            InputMode::DirectText => "message",
+        let input_row = match self.input_mode {
+            InputMode::DirectTo => {
+                let input = text_input("recipient", &self.input_value)
+                    .on_input(AppMessage::InputChanged)
+                    .on_submit(AppMessage::SubmitInput)
+                    .padding(8)
+                    .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
+                row![input]
+            }
+            InputMode::SendChat | InputMode::DirectText => {
+                let editor = text_editor(&self.compose_content)
+                    .on_action(AppMessage::ComposeAction)
+                    .height(Length::Fixed(120.0));
+                row![editor]
+            }
+            InputMode::None => {
+                let input = text_input("select Send or Direct", &self.input_value)
+                    .on_input(AppMessage::InputChanged)
+                    .padding(8)
+                    .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
+                row![input]
+            }
         };
-
-        let input = text_input(input_placeholder, &self.input_value)
-            .on_input(AppMessage::InputChanged)
-            .on_submit(AppMessage::SubmitInput)
-            .padding(8)
-            .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
 
         let cancel = button(text("Cancel")).on_press(AppMessage::CancelInput);
         let status = text(&self.status)
             .size(14)
             .horizontal_alignment(alignment::Horizontal::Left);
 
-        let footer = column![controls, row![input, cancel].spacing(10), status]
+        let footer = column![controls, row![input_row, cancel].spacing(10), status]
             .spacing(10)
             .padding(12);
 

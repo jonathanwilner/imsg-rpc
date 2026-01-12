@@ -256,6 +256,62 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
          :app-name "imsg")
       (message "imsg: %s %s" title text))))
 
+(defvar-local imsg--compose-target nil)
+
+(define-derived-mode imsg-compose-mode text-mode "IMsg-Compose"
+  "Major mode for composing imsg messages."
+  (setq-local header-line-format "C-c C-c send, C-c C-k cancel"))
+
+(defun imsg-compose-chat (chat-id)
+  "Compose a message to CHAT-ID."
+  (interactive "nChat ID: ")
+  (let ((buf (get-buffer-create "*imsg-compose*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (imsg-compose-mode)
+      (setq imsg--compose-target (list :chat-id chat-id)))
+    (pop-to-buffer buf)))
+
+(defun imsg-compose-to (to)
+  "Compose a direct message to TO."
+  (interactive "sTo (handle/number): ")
+  (let ((buf (get-buffer-create "*imsg-compose*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (imsg-compose-mode)
+      (setq imsg--compose-target (list :to to)))
+    (pop-to-buffer buf)))
+
+(defun imsg-compose-send ()
+  "Send the current compose buffer."
+  (interactive)
+  (unless (eq major-mode 'imsg-compose-mode)
+    (user-error "Not in an imsg compose buffer"))
+  (let* ((text (string-trim (buffer-string)))
+         (chat-id (plist-get imsg--compose-target :chat-id))
+         (to (plist-get imsg--compose-target :to)))
+    (when (string-empty-p text)
+      (user-error "Message text is empty"))
+    (cond
+     (chat-id
+      (imsg-send `(("chat_id" . ,chat-id) ("text" . ,text))))
+     (to
+      (imsg-send `(("to" . ,to) ("text" . ,text))))
+     (t
+      (user-error "Missing compose target")))
+    (kill-buffer (current-buffer))
+    (message "imsg: sent")))
+
+(defun imsg-compose-cancel ()
+  "Cancel the current compose buffer."
+  (interactive)
+  (when (eq major-mode 'imsg-compose-mode)
+    (kill-buffer (current-buffer))
+    (message "imsg: cancelled")))
+
+(define-key imsg-compose-mode-map (kbd "C-c C-c") #'imsg-compose-send)
+(define-key imsg-compose-mode-map (kbd "C-c C-k") #'imsg-compose-cancel)
+
 (defun imsg--resubscribe-all ()
   "Resubscribe to all desired subscriptions after reconnect."
   (maphash
@@ -500,6 +556,8 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     ("h" "history" imsg-history-interactive)]
    ["Send/Watch"
     ("m" "send" imsg-send-interactive)
+    ("C" "compose chat" imsg-compose-chat)
+    ("D" "compose direct" imsg-compose-to)
     ("w" "watch subscribe" imsg-watch-subscribe-interactive)
     ("u" "watch unsubscribe" imsg-watch-unsubscribe-interactive)]])
 
