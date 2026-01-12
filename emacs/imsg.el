@@ -390,6 +390,9 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
       (insert "  imsg-watch-subscribe-interactive\n")
       (insert "  imsg-watch-unsubscribe-interactive\n")
       (insert "  imsg-compose-chat / imsg-compose-to\n\n")
+      (insert "Chats buffer\n")
+      (insert "  RET open history\n")
+      (insert "  c compose to chat\n\n")
       (insert "Compose keys\n")
       (insert "  C-c C-c send\n")
       (insert "  C-c C-k cancel\n")
@@ -668,6 +671,65 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
       (setq buffer-read-only t))
     (display-buffer buf)))
 
+(defun imsg--attachment-path (attachment)
+  (let ((path (or (alist-get 'original_path attachment)
+                  (alist-get 'filename attachment))))
+    (when (and path (file-exists-p path))
+      path)))
+
+(defun imsg--attachment-image-p (attachment)
+  (let ((mime (alist-get 'mime_type attachment))
+        (path (imsg--attachment-path attachment)))
+    (and path
+         (or (and mime (string-prefix-p "image/" mime))
+             (image-type-from-file-name path)))))
+
+(defun imsg--insert-message (message)
+  (insert (imsg--format-message message) "\n")
+  (when imsg-show-images
+    (let ((attachments (alist-get 'attachments message)))
+      (when (listp attachments)
+        (dolist (attachment attachments)
+          (when (imsg--attachment-image-p attachment)
+            (let ((path (imsg--attachment-path attachment)))
+              (when path
+                (condition-case _err
+                    (let ((img (create-image path)))
+                      (when img
+                        (insert-image img)
+                        (insert "\n")))
+                  (error nil)))))))))
+  (insert "\n"))
+
+(defun imsg--display-messages (buffer-name messages &optional chat-id)
+  (let ((buf (get-buffer-create buffer-name)))
+    (with-current-buffer buf
+      (setq buffer-read-only nil)
+      (erase-buffer)
+      (imsg-history-mode)
+      (setq-local imsg--history-chat-id chat-id)
+      (dolist (message messages)
+        (imsg--insert-message message))
+      (goto-address-mode 1)
+      (goto-char (point-min))
+      (setq buffer-read-only t))
+    (display-buffer buf)))
+
+(defun imsg--display-chat-lines (buffer-name chats)
+  (let ((buf (get-buffer-create buffer-name)))
+    (with-current-buffer buf
+      (setq buffer-read-only nil)
+      (erase-buffer)
+      (imsg-chats-mode)
+      (dolist (chat chats)
+        (let* ((id (alist-get 'id chat))
+               (line (imsg--format-chat chat))
+               (text (propertize line 'imsg-chat-id id 'mouse-face 'highlight)))
+          (insert text "\n")))
+      (goto-char (point-min))
+      (setq buffer-read-only t))
+    (display-buffer buf)))
+
 (defun imsg-chats-list-interactive (limit)
   "Interactive chat list."
   (interactive "nLimit: ")
@@ -676,17 +738,15 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     (imsg--cache-contacts
      (delete-dups
       (delq nil (mapcar (lambda (chat) (alist-get 'identifier chat)) chats))))
-    (imsg--display-lines "*imsg-chats*"
-                         (mapcar #'imsg--format-chat chats))))
+    (imsg--display-chat-lines "*imsg-chats*" chats)))
 
 (defun imsg-history-interactive (chat-id limit)
   "Interactive history viewer."
   (interactive "nChat ID: \nnLimit: ")
-  (let* ((result (imsg-messages-history chat-id limit))
+  (let* ((result (imsg-messages-history chat-id limit nil nil nil t))
          (messages (alist-get 'messages result)))
     (imsg--cache-contacts (delete-dups (mapcar (lambda (m) (alist-get 'sender m)) messages)))
-    (imsg--display-lines "*imsg-history*"
-                         (mapcar #'imsg--format-message messages))))
+    (imsg--display-messages "*imsg-history*" messages chat-id)))
 
 (defun imsg-send-interactive (to text &optional file service)
   "Interactive send."
@@ -701,20 +761,78 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     (imsg-send params)
     (message "imsg: send ok")))
 
+(defvar imsg-default-history-limit 50)
+(defvar imsg-show-images t)
+(defvar-local imsg--history-chat-id nil)
 (defvar imsg--watch-buffer "*imsg-watch*")
+
+(defvar imsg-chats-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'imsg-chats-open-at-point)
+    (define-key map (kbd "o") #'imsg-chats-open-at-point)
+    (define-key map (kbd "c") #'imsg-chats-compose-at-point)
+    (define-key map (kbd "C-c C-t") #'imsg-transient)
+    map))
+
+(define-derived-mode imsg-chats-mode special-mode "IMsg-Chats"
+  "Major mode for imsg chat lists."
+  (setq buffer-read-only t))
+
+(defvar imsg-history-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "c") #'imsg-history-compose)
+    (define-key map (kbd "C-c C-t") #'imsg-transient)
+    map))
+
+(define-derived-mode imsg-history-mode special-mode "IMsg-History"
+  "Major mode for imsg message history."
+  (setq buffer-read-only t))
+
+(defun imsg-chats-open-at-point ()
+  "Open chat history for the chat at point."
+  (interactive)
+  (let* ((prop (get-text-property (point) 'imsg-chat-id))
+         (line (thing-at-point 'line t))
+         (match (and (not prop)
+                     (string-match "^\\[\\([0-9]+\\)\\]" (or line ""))))
+         (id (or prop (and match (string-to-number (match-string 1 line))))))
+    (if id
+        (imsg-history-interactive id imsg-default-history-limit)
+      (message "imsg: no chat id on this line"))))
+
+(defun imsg-chats-compose-at-point ()
+  "Compose a message to the chat at point."
+  (interactive)
+  (let* ((prop (get-text-property (point) 'imsg-chat-id))
+         (line (thing-at-point 'line t))
+         (match (and (not prop)
+                     (string-match "^\\[\\([0-9]+\\)\\]" (or line ""))))
+         (id (or prop (and match (string-to-number (match-string 1 line))))))
+    (if id
+        (imsg-compose-chat id)
+      (message "imsg: no chat id on this line"))))
+
+(defun imsg-history-compose ()
+  "Compose a message to the chat in the history buffer."
+  (interactive)
+  (if imsg--history-chat-id
+      (imsg-compose-chat imsg--history-chat-id)
+    (message "imsg: no chat id in this buffer")))
 
 (defun imsg-watch-subscribe-interactive (chat-id)
   "Interactive watch subscribe."
   (interactive "nChat ID (0 for all): ")
   (let ((params (if (> chat-id 0) `(("chat_id" . ,chat-id)) nil)))
+    (setq params (append params '(("attachments" . t))))
     (imsg-watch-subscribe
      params
      (lambda (message)
        (imsg--cache-contacts (list (alist-get 'sender message)))
        (with-current-buffer (get-buffer-create imsg--watch-buffer)
+         (imsg-history-mode)
          (goto-address-mode 1)
          (goto-char (point-max))
-         (insert (imsg--format-message message) "\n")))
+         (imsg--insert-message message)))
      (lambda (subscription err)
        (if err
            (message "imsg: watch error %S" err)
