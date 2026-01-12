@@ -48,6 +48,24 @@ enum Transport {
 }
 
 #[derive(Debug, Clone)]
+struct RpcConfig {
+    transport: Transport,
+    imsg_bin: String,
+    db: Option<String>,
+    host: String,
+    port: u16,
+}
+
+impl RpcConfig {
+    fn connect(&self) -> io::Result<RpcClient> {
+        match self.transport {
+            Transport::Local => RpcClient::connect_local(&self.imsg_bin, self.db.as_deref()),
+            Transport::Tcp => RpcClient::connect_tcp(&self.host, self.port),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct Chat {
     id: i64,
     name: String,
@@ -109,6 +127,7 @@ struct App {
     selected: usize,
     status: String,
     watch_subscription: Option<String>,
+    watch_chat_id: Option<i64>,
     pending: HashMap<String, PendingRequest>,
     contacts: HashMap<String, String>,
     input: String,
@@ -121,16 +140,20 @@ struct App {
     focus: FocusPane,
     message_offset: usize,
     message_index: usize,
+    reconnect_at: Option<Instant>,
+    reconnect_attempts: u32,
+    config: RpcConfig,
 }
 
 impl App {
-    fn new(notify: bool) -> Self {
+    fn new(notify: bool, config: RpcConfig) -> Self {
         Self {
             chats: Vec::new(),
             messages: Vec::new(),
             selected: 0,
             status: "ready".to_string(),
             watch_subscription: None,
+            watch_chat_id: None,
             pending: HashMap::new(),
             contacts: HashMap::new(),
             input: String::new(),
@@ -143,17 +166,24 @@ impl App {
             focus: FocusPane::Chats,
             message_offset: 0,
             message_index: 0,
+            reconnect_at: None,
+            reconnect_attempts: 0,
+            config,
         }
     }
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
-
-    let mut client = match args.transport {
-        Transport::Local => RpcClient::connect_local(&args.imsg_bin, args.db.as_deref())?,
-        Transport::Tcp => RpcClient::connect_tcp(&args.host, args.port)?,
+    let config = RpcConfig {
+        transport: args.transport,
+        imsg_bin: args.imsg_bin,
+        db: args.db,
+        host: args.host,
+        port: args.port,
     };
+
+    let mut client = config.connect()?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -161,7 +191,7 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, &mut client, args.notify);
+    let result = run_app(&mut terminal, &mut client, args.notify, config);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -174,8 +204,9 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     client: &mut RpcClient,
     notify: bool,
+    config: RpcConfig,
 ) -> io::Result<()> {
-    let mut app = App::new(notify);
+    let mut app = App::new(notify, config);
     request_chats(client, &mut app);
 
     loop {
@@ -191,6 +222,7 @@ fn run_app(
         }
 
         handle_rpc_events(client, &mut app);
+        handle_reconnect(client, &mut app);
         if app.last_tick.elapsed() > Duration::from_secs(5) {
             app.last_tick = Instant::now();
         }
@@ -626,9 +658,20 @@ fn toggle_watch(client: &mut RpcClient, app: &mut App, chat_id: i64) {
             );
             app.pending.insert(id, PendingRequest::WatchUnsubscribe);
             app.status = "unsubscribing...".to_string();
+            app.watch_chat_id = None;
         }
         return;
     }
+    app.watch_chat_id = Some(chat_id);
+    let id = client.send_request(
+        "watch.subscribe",
+        Some(serde_json::json!({ "chat_id": chat_id })),
+    );
+    app.pending.insert(id, PendingRequest::WatchSubscribe);
+    app.status = "subscribing...".to_string();
+}
+
+fn request_watch_subscribe(client: &mut RpcClient, app: &mut App, chat_id: i64) {
     let id = client.send_request(
         "watch.subscribe",
         Some(serde_json::json!({ "chat_id": chat_id })),
@@ -697,7 +740,49 @@ fn handle_rpc_events(client: &mut RpcClient, app: &mut App) {
             }
             RpcEvent::Closed { message } => {
                 app.status = format!("rpc closed: {message}");
+                schedule_reconnect(app);
             }
+        }
+    }
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let exp = attempt.min(4).saturating_sub(0);
+    let seconds = 2_u64.saturating_mul(2_u64.saturating_pow(exp));
+    Duration::from_secs(seconds.min(30))
+}
+
+fn schedule_reconnect(app: &mut App) {
+    if app.reconnect_at.is_some() {
+        return;
+    }
+    let delay = reconnect_delay(app.reconnect_attempts);
+    app.reconnect_attempts = app.reconnect_attempts.saturating_add(1);
+    app.reconnect_at = Some(Instant::now() + delay);
+}
+
+fn handle_reconnect(client: &mut RpcClient, app: &mut App) {
+    let Some(when) = app.reconnect_at else { return };
+    if Instant::now() < when {
+        return;
+    }
+    match app.config.connect() {
+        Ok(new_client) => {
+            *client = new_client;
+            app.reconnect_at = None;
+            app.reconnect_attempts = 0;
+            app.watch_subscription = None;
+            app.pending.clear();
+            app.status = "reconnected".to_string();
+            request_chats(client, app);
+            if let Some(chat_id) = app.watch_chat_id {
+                request_watch_subscribe(client, app, chat_id);
+            }
+        }
+        Err(err) => {
+            app.status = format!("reconnect failed: {err}");
+            app.reconnect_at = None;
+            schedule_reconnect(app);
         }
     }
 }
@@ -745,6 +830,7 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
         }
         PendingRequest::WatchUnsubscribe => {
             app.watch_subscription = None;
+            app.watch_chat_id = None;
             app.status = "watch unsubscribed".to_string();
         }
         PendingRequest::Send => {
@@ -928,6 +1014,15 @@ mod tests {
         assert_eq!(message.reply_to_guid.as_deref(), Some("DEF"));
         assert_eq!(message.reactions.len(), 1);
         assert_eq!(message.reactions[0].emoji, "❤️");
+    }
+
+    #[test]
+    fn reconnect_delay_caps_at_thirty_seconds() {
+        assert_eq!(reconnect_delay(0).as_secs(), 2);
+        assert_eq!(reconnect_delay(1).as_secs(), 4);
+        assert_eq!(reconnect_delay(2).as_secs(), 8);
+        assert_eq!(reconnect_delay(4).as_secs(), 30);
+        assert_eq!(reconnect_delay(10).as_secs(), 30);
     }
 }
 

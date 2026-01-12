@@ -118,6 +118,7 @@ struct App {
     selected: usize,
     selected_message: Option<usize>,
     watch_subscription: Option<String>,
+    watch_chat_id: Option<i64>,
     input_mode: InputMode,
     input_value: String,
     input_target: Option<String>,
@@ -128,6 +129,9 @@ struct App {
     last_tick: Instant,
     contacts: HashMap<String, String>,
     contact_query: Option<String>,
+    reconnect_at: Option<Instant>,
+    reconnect_attempts: u32,
+    config: Flags,
 }
 
 impl App {
@@ -157,6 +161,7 @@ impl App {
             selected: 0,
             selected_message: None,
             watch_subscription: None,
+            watch_chat_id: None,
             input_mode: InputMode::None,
             input_value: String::new(),
             input_target: None,
@@ -167,6 +172,9 @@ impl App {
             last_tick: Instant::now(),
             contacts: HashMap::new(),
             contact_query: None,
+            reconnect_at: None,
+            reconnect_attempts: 0,
+            config: flags,
         };
 
         app.request_chats();
@@ -201,8 +209,10 @@ impl App {
                 );
                 self.pending.insert(id, PendingRequest::WatchUnsubscribe);
                 self.status = "unsubscribing...".to_string();
+                self.watch_chat_id = None;
                 return;
             }
+            self.watch_chat_id = Some(chat_id);
             let id = client.send_request(
                 "watch.subscribe",
                 Some(serde_json::json!({ "chat_id": chat_id })),
@@ -231,6 +241,17 @@ impl App {
             );
             self.pending.insert(id, PendingRequest::Send);
             self.status = "sending...".to_string();
+        }
+    }
+
+    fn request_watch_subscribe(&mut self, chat_id: i64) {
+        if let Some(client) = &mut self.client {
+            let id = client.send_request(
+                "watch.subscribe",
+                Some(serde_json::json!({ "chat_id": chat_id })),
+            );
+            self.pending.insert(id, PendingRequest::WatchSubscribe);
+            self.status = "subscribing...".to_string();
         }
     }
 
@@ -310,6 +331,7 @@ impl App {
             }
             RpcEvent::Closed { message } => {
                 self.status = format!("rpc closed: {message}");
+                self.schedule_reconnect();
             }
         }
     }
@@ -356,6 +378,7 @@ impl App {
             }
             PendingRequest::WatchUnsubscribe => {
                 self.watch_subscription = None;
+                self.watch_chat_id = None;
                 self.status = "watch unsubscribed".to_string();
             }
             PendingRequest::Send => {
@@ -429,6 +452,41 @@ impl App {
             self.handle_rpc_event(event);
         }
     }
+
+    fn schedule_reconnect(&mut self) {
+        if self.reconnect_at.is_some() {
+            return;
+        }
+        let delay = reconnect_delay(self.reconnect_attempts);
+        self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
+        self.reconnect_at = Some(Instant::now() + delay);
+    }
+
+    fn handle_reconnect(&mut self) {
+        let Some(when) = self.reconnect_at else { return };
+        if Instant::now() < when {
+            return;
+        }
+        match connect_from_config(&self.config) {
+            Ok(client) => {
+                self.client = Some(client);
+                self.reconnect_at = None;
+                self.reconnect_attempts = 0;
+                self.watch_subscription = None;
+                self.pending.clear();
+                self.status = "reconnected".to_string();
+                self.request_chats();
+                if let Some(chat_id) = self.watch_chat_id {
+                    self.request_watch_subscribe(chat_id);
+                }
+            }
+            Err(err) => {
+                self.status = format!("reconnect failed: {err}");
+                self.reconnect_at = None;
+                self.schedule_reconnect();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -478,6 +536,7 @@ impl Application for App {
                 if self.last_tick.elapsed() >= Duration::from_millis(150) {
                     self.last_tick = Instant::now();
                     self.drain_events();
+                    self.handle_reconnect();
                 }
             }
             AppMessage::RefreshChats => {
@@ -806,6 +865,18 @@ impl Application for App {
     }
 }
 
+fn connect_from_config(config: &Flags) -> std::io::Result<RpcClient> {
+    match config.transport {
+        Transport::Local => RpcClient::connect_local(&config.imsg_bin, config.db.as_deref()),
+        Transport::Tcp => RpcClient::connect_tcp(&config.host, config.port),
+    }
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let seconds = 2_u64.saturating_mul(2_u64.saturating_pow(attempt.min(4)));
+    Duration::from_secs(seconds.min(30))
+}
+
 fn open_url(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let mut cmd = ProcessCommand::new("open");
@@ -1098,6 +1169,15 @@ mod tests {
         assert_eq!(message.reply_to_guid.as_deref(), Some("DEF"));
         assert_eq!(message.reactions.len(), 1);
         assert_eq!(message.reactions[0].emoji, "❤️");
+    }
+
+    #[test]
+    fn reconnect_delay_caps_at_thirty_seconds() {
+        assert_eq!(reconnect_delay(0).as_secs(), 2);
+        assert_eq!(reconnect_delay(1).as_secs(), 4);
+        assert_eq!(reconnect_delay(2).as_secs(), 8);
+        assert_eq!(reconnect_delay(4).as_secs(), 30);
+        assert_eq!(reconnect_delay(10).as_secs(), 30);
     }
 }
 
