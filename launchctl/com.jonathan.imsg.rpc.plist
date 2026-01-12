@@ -6,7 +6,7 @@
     <string>com.jonathan.imsg.rpc</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/Applications/IMsgRPC.app/Contents/MacOS/imsg</string>
+      <string>/Users/jonathan/Applications/IMsgRPC.app/Contents/MacOS/imsg</string>
       <string>rpc</string>
     </array>
     <key>RunAtLoad</key>

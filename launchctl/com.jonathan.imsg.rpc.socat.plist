@@ -7,11 +7,11 @@
     <key>EnvironmentVariables</key>
     <dict>
       <key>IMSG_BIN</key>
-      <string>/Applications/IMsgRPC.app/Contents/MacOS/imsg</string>
+      <string>/Users/jonathan/Applications/IMsgRPC.app/Contents/MacOS/imsg</string>
       <key>IMSG_PORT</key>
       <string>57999</string>
       <key>SOCAT_BIN</key>
-      <string>/Applications/IMsgRPC.app/Contents/MacOS/socat</string>
+      <string>/Users/jonathan/Applications/IMsgRPC.app/Contents/MacOS/socat</string>
     </dict>
     <key>ProgramArguments</key>
     <array>
