@@ -8,10 +8,11 @@ protocol RPCOutput: Sendable {
 }
 
 final class RPCServer {
-  private let store: MessageStore
-  private let watcher: MessageWatcher
+  private let storeProvider: () throws -> MessageStore
+  private var store: MessageStore?
+  private var watcher: MessageWatcher?
+  private var cache: ChatCache?
   private let output: RPCOutput
-  private let cache: ChatCache
   private let verbose: Bool
   private let sendMessage: (MessageSendOptions) throws -> Void
   private let sendReaction: (ReactionSendOptions) throws -> Void
@@ -35,9 +36,37 @@ final class RPCServer {
       try ContactLookup.resolve(handles: handles)
     }
   ) {
+    self.storeProvider = { store }
     self.store = store
     self.watcher = MessageWatcher(store: store)
     self.cache = ChatCache(store: store)
+    self.verbose = verbose
+    self.output = output
+    self.sendMessage = sendMessage
+    self.sendReaction = sendReaction
+    self.contactSearch = contactSearch
+    self.contactResolve = contactResolve
+  }
+
+  init(
+    storeProvider: @escaping () throws -> MessageStore,
+    verbose: Bool,
+    output: RPCOutput = RPCWriter(),
+    sendMessage: @escaping (MessageSendOptions) throws -> Void = { try MessageSender().send($0) },
+    sendReaction: @escaping (ReactionSendOptions) throws -> Void = {
+      try MessageSender().sendReaction($0)
+    },
+    contactSearch: @escaping (String, Int) throws -> [ContactMatch] = { query, limit in
+      try ContactLookup.search(query: query, limit: limit)
+    },
+    contactResolve: @escaping ([String]) throws -> [String: String] = { handles in
+      try ContactLookup.resolve(handles: handles)
+    }
+  ) {
+    self.storeProvider = storeProvider
+    self.store = nil
+    self.watcher = nil
+    self.cache = nil
     self.verbose = verbose
     self.output = output
     self.sendMessage = sendMessage
@@ -90,6 +119,7 @@ final class RPCServer {
     let id = request["id"]
 
     do {
+      let (store, watcher, cache) = try requireDependencies()
       switch method {
       case "chats.list":
         let limit = intParam(params["limit"]) ?? 20
@@ -202,9 +232,9 @@ final class RPCServer {
         }
         respond(id: id, result: ["ok": true])
       case "send":
-        try handleSend(params: params, id: id)
+        try handleSend(params: params, id: id, cache: cache)
       case "reactions.send":
-        try handleReaction(params: params, id: id)
+        try handleReaction(params: params, id: id, store: store, cache: cache)
       case "contacts.search":
         try handleContactSearch(params: params, id: id)
       case "contacts.resolve":
@@ -234,7 +264,7 @@ final class RPCServer {
     output.sendResponse(id: id, result: result)
   }
 
-  private func handleSend(params: [String: Any], id: Any?) throws {
+  private func handleSend(params: [String: Any], id: Any?, cache: ChatCache) throws {
     let text = stringParam(params["text"]) ?? ""
     let file = stringParam(params["file"]) ?? ""
     let serviceRaw = stringParam(params["service"]) ?? "auto"
@@ -286,7 +316,12 @@ final class RPCServer {
     respond(id: id, result: ["ok": true])
   }
 
-  private func handleReaction(params: [String: Any], id: Any?) throws {
+  private func handleReaction(
+    params: [String: Any],
+    id: Any?,
+    store: MessageStore,
+    cache: ChatCache
+  ) throws {
     guard let guid = stringParam(params["guid"]), !guid.isEmpty else {
       throw RPCError.invalidParams("guid is required")
     }
@@ -354,6 +389,19 @@ final class RPCServer {
       ["handle": handle, "name": name]
     }
     respond(id: id, result: ["contacts": payloads])
+  }
+
+  private func requireDependencies() throws -> (MessageStore, MessageWatcher, ChatCache) {
+    if let store, let watcher, let cache {
+      return (store, watcher, cache)
+    }
+    let store = try storeProvider()
+    let watcher = MessageWatcher(store: store)
+    let cache = ChatCache(store: store)
+    self.store = store
+    self.watcher = watcher
+    self.cache = cache
+    return (store, watcher, cache)
   }
 
 }

@@ -427,3 +427,25 @@ func rpcReactionSendResolvesChatID() async throws {
   #expect(captured?.chatGUID == "iMessage;+;chat123")
   #expect(captured?.messageGUID == "ABC")
 }
+
+@Test
+func rpcHandlesStoreInitFailures() async throws {
+  let output = TestRPCOutput()
+  let server = RPCServer(
+    storeProvider: {
+      throw IMsgError.permissionDenied(
+        path: "/tmp/chat.db",
+        underlying: NSError(domain: "test", code: 1)
+      )
+    },
+    verbose: false,
+    output: output
+  )
+
+  let line = #"{"jsonrpc":"2.0","id":16,"method":"chats.list","params":{"limit":1}}"#
+  await server.handleLineForTesting(line)
+
+  #expect(output.errors.count == 1)
+  let error = output.errors[0]["error"] as? [String: Any]
+  #expect(int64Value(error?["code"]) == -32603)
+}

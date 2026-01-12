@@ -16,8 +16,10 @@ enum RpcCommand {
     ]
   ) { values, runtime in
     let dbPath = values.option("db") ?? MessageStore.defaultPath
-    let store = try MessageStore(path: dbPath)
-    let server = RPCServer(store: store, verbose: runtime.verbose)
+    let server = RPCServer(
+      storeProvider: { try MessageStore(path: dbPath) },
+      verbose: runtime.verbose
+    )
     try await server.run()
   }
 }
