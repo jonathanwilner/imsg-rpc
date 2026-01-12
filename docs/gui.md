@@ -72,12 +72,19 @@ nix-shell
 - Refresh: reload chat list
 - History: load history for selected chat
 - Watch: toggle watch for selected chat
-- Send: send to selected chat
-- Direct: enter recipient, then message
 - React: send a reaction for the selected message
-- Cancel: clear current input
+- Help: show command overlay
+- Clear: reset compose fields
 - Click a message bubble to select it
 - Click URL chips under a message to open in your browser (`xdg-open` on Linux, `open` on macOS)
+
+## Compose bar
+
+The compose bar is always visible:
+
+- Leave `To` empty to send to the selected chat
+- Use `Recent` to select prior recipients
+- `Send` sends the current message; `Clear` resets the fields
 
 ## Notifications
 

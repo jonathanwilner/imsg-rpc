@@ -80,10 +80,11 @@ nix-shell
 - `PageUp/PageDown` scroll messages faster
 - `Enter` load history for selected chat
 - `w` toggle watch for selected chat
-- `s` send message to selected chat
-- `n` new direct message (prompt for recipient + text)
+- `s` compose message (send to selected chat by default)
+- `n` compose direct message (focus To field)
 - `R` react to selected message (prompt for reaction)
 - `o` open the first URL in the selected message
+- `h` or `?` help overlay
 - `Esc` cancel input
 
 ## Notifications
@@ -101,3 +102,11 @@ Disable with `--notify false`.
 
 - Rust stable or Nix dev shell/flake.
 - A notification daemon if you want popups (e.g., `dunst`, GNOME).
+
+## Compose bar
+
+The compose bar is always visible at the bottom:
+
+- `To:` empty sends to the selected chat
+- `Tab` switches between To/Message fields
+- `Shift-Tab` cycles recent recipients (most recent first)

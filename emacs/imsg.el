@@ -91,6 +91,7 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
 (defvar imsg--subscription-tokens (make-hash-table :test 'equal))
 (defvar imsg--desired-subscriptions (make-hash-table :test 'equal))
 (defvar imsg--contact-cache (make-hash-table :test 'equal))
+(defvar imsg--recipient-history nil)
 
 (defface imsg-sent-face
   '((t :foreground "white" :background "DodgerBlue3"))
@@ -335,7 +336,9 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
                           matches))))
       (if (and choices (not (string-empty-p query)))
           (cdr (assoc (completing-read "Select contact: " choices nil t) choices))
-        query))))
+        (completing-read "To (handle/number or name): "
+                         (append (mapcar #'car choices) imsg--recipient-history)
+                         nil nil query 'imsg--recipient-history)))))
   (let ((buf (get-buffer-create "*imsg-compose*")))
     (with-current-buffer buf
       (erase-buffer)
@@ -360,8 +363,45 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
       (imsg-send `(("to" . ,to) ("text" . ,text))))
      (t
       (user-error "Missing compose target")))
+    (when to
+      (setq imsg--recipient-history (cons to (delete to imsg--recipient-history))))
     (kill-buffer (current-buffer))
     (message "imsg: sent")))
+
+(defun imsg-compose-last-recipient ()
+  "Compose a message to the most recent recipient."
+  (interactive)
+  (if (car imsg--recipient-history)
+      (imsg-compose-to (car imsg--recipient-history))
+    (user-error "No recipient history")))
+
+(defun imsg-help ()
+  "Show an imsg help overlay."
+  (interactive)
+  (let ((buf (get-buffer-create "*imsg-help*")))
+    (with-current-buffer buf
+      (setq buffer-read-only nil)
+      (erase-buffer)
+      (insert "imsg help\n\n")
+      (insert "Commands\n")
+      (insert "  imsg-transient: main command menu\n")
+      (insert "  imsg-chats-list-interactive\n")
+      (insert "  imsg-history-interactive\n")
+      (insert "  imsg-watch-subscribe-interactive\n")
+      (insert "  imsg-watch-unsubscribe-interactive\n")
+      (insert "  imsg-compose-chat / imsg-compose-to\n\n")
+      (insert "Compose keys\n")
+      (insert "  C-c C-c send\n")
+      (insert "  C-c C-k cancel\n")
+      (insert "  C-c C-e emoji chooser\n")
+      (insert "  C-c C-r reaction\n")
+      (insert "  C-c C-t compose menu\n\n")
+      (insert "Transient\n")
+      (insert "  ? help\n")
+      (insert "  L last recipient\n")
+      (setq buffer-read-only t)
+      (special-mode))
+    (display-buffer buf '((display-buffer-full-frame)))))
 
 (defun imsg-compose-cancel ()
   "Cancel the current compose buffer."
@@ -382,6 +422,8 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
     ("s" "send" imsg-compose-send)
     ("e" "emoji" imsg-compose-insert-emoji)
     ("r" "react" imsg-compose-send-reaction)
+    ("l" "last recipient" imsg-compose-last-recipient)
+    ("?" "help" imsg-help)
     ("c" "cancel" imsg-compose-cancel)]])
 
 (defun imsg-compose-insert-emoji ()
@@ -686,8 +728,11 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     ("m" "send" imsg-send-interactive)
     ("C" "compose chat" imsg-compose-chat)
     ("D" "compose direct" imsg-compose-to)
+    ("L" "last recipient" imsg-compose-last-recipient)
     ("w" "watch subscribe" imsg-watch-subscribe-interactive)
-    ("u" "watch unsubscribe" imsg-watch-unsubscribe-interactive)]])
+    ("u" "watch unsubscribe" imsg-watch-unsubscribe-interactive)]
+   ["Help"
+    ("?" "help" imsg-help)]])
 
 (provide 'imsg)
 ;;; imsg.el ends here

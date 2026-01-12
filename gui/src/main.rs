@@ -2,8 +2,8 @@ use clap::{Parser, ValueEnum};
 use iced::{
     alignment, executor, theme,
     widget::{
-        button, column, container, horizontal_space, row, scrollable, text, text_editor,
-        text_input, Column, Container,
+        button, column, container, horizontal_space, pick_list, row, scrollable, text,
+        text_editor, text_input, Column, Container,
     },
     Application, Command, Element, Length, Settings, Subscription, Theme,
 };
@@ -86,9 +86,6 @@ enum PendingRequest {
 #[derive(Debug, Clone)]
 enum InputMode {
     None,
-    SendChat,
-    DirectTo,
-    DirectText,
     Reaction,
 }
 
@@ -100,13 +97,15 @@ enum AppMessage {
     SelectMessage(usize),
     LoadHistory,
     ToggleWatch,
-    StartSend,
-    StartDirect,
     StartReaction,
-    InputChanged(String),
+    ComposeToChanged(String),
     ComposeAction(text_editor::Action),
-    SubmitInput,
-    CancelInput,
+    SendCompose,
+    ClearCompose,
+    ToggleHelp,
+    ReactionInputChanged(String),
+    SubmitReaction,
+    CancelReaction,
     OpenUrl(String),
 }
 
@@ -120,9 +119,9 @@ struct App {
     watch_subscription: Option<String>,
     watch_chat_id: Option<i64>,
     input_mode: InputMode,
-    input_value: String,
-    input_target: Option<String>,
+    reaction_input: String,
     reaction_target: Option<String>,
+    compose_to: String,
     compose_content: text_editor::Content,
     status: String,
     notify: bool,
@@ -132,6 +131,8 @@ struct App {
     reconnect_at: Option<Instant>,
     reconnect_attempts: u32,
     config: Flags,
+    recipient_history: Vec<String>,
+    show_help: bool,
 }
 
 impl App {
@@ -163,9 +164,9 @@ impl App {
             watch_subscription: None,
             watch_chat_id: None,
             input_mode: InputMode::None,
-            input_value: String::new(),
-            input_target: None,
+            reaction_input: String::new(),
             reaction_target: None,
+            compose_to: String::new(),
             compose_content: text_editor::Content::new(),
             status,
             notify: flags.notify,
@@ -175,6 +176,8 @@ impl App {
             reconnect_at: None,
             reconnect_attempts: 0,
             config: flags,
+            recipient_history: Vec::new(),
+            show_help: false,
         };
 
         app.request_chats();
@@ -399,42 +402,48 @@ impl App {
                     }
                 }
             }
-            PendingRequest::ContactSearch => {
-                let matches = result
-                    .get("matches")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let mut handles = Vec::new();
-                let mut labels = Vec::new();
-                for entry in matches {
-                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    if let Some(list) = entry.get("handles").and_then(|v| v.as_array()) {
-                        for handle in list {
-                            if let Some(value) = handle.as_str() {
-                                handles.push(value.to_string());
-                                if !name.is_empty() {
-                                    labels.push(format!("{name} <{value}>"));
-                                } else {
-                                    labels.push(value.to_string());
-                                }
+        PendingRequest::ContactSearch => {
+            let matches = result
+                .get("matches")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut handles = Vec::new();
+            let mut labels = Vec::new();
+            for entry in matches {
+                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(list) = entry.get("handles").and_then(|v| v.as_array()) {
+                    for handle in list {
+                        if let Some(value) = handle.as_str() {
+                            handles.push(value.to_string());
+                            if !name.is_empty() {
+                                labels.push(format!("{name} <{value}>"));
+                            } else {
+                                labels.push(value.to_string());
                             }
                         }
                     }
                 }
-                if handles.len() == 1 {
-                    self.input_target = Some(handles[0].clone());
-                    self.input_mode = InputMode::DirectText;
-                    self.input_value.clear();
-                    self.compose_content = text_editor::Content::new();
-                    self.status = "send: enter message".to_string();
-                } else if handles.is_empty() {
-                    self.status = "no contact matches; enter handle".to_string();
-                } else {
-                    self.status = format!("multiple matches: {}", labels.join(", "));
-                }
-                self.contact_query = None;
             }
+            if handles.len() == 1 {
+                self.compose_to = handles[0].clone();
+                let body = self.compose_content.text().trim().to_string();
+                if !body.is_empty() && self.contact_query.is_some() {
+                    let target = self.compose_to.clone();
+                    self.request_send_to(&target, &body);
+                    self.record_recipient(&target);
+                    self.compose_content = text_editor::Content::new();
+                    self.status = "sent".to_string();
+                } else {
+                    self.status = "contact resolved".to_string();
+                }
+            } else if handles.is_empty() {
+                self.status = "no contact matches; enter handle".to_string();
+            } else {
+                self.status = format!("multiple matches: {}", labels.join(", "));
+            }
+            self.contact_query = None;
+        }
             PendingRequest::Reaction => {
                 self.status = "reaction sent".to_string();
             }
@@ -451,6 +460,15 @@ impl App {
         for event in events {
             self.handle_rpc_event(event);
         }
+    }
+
+    fn record_recipient(&mut self, handle: &str) {
+        let trimmed = handle.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.recipient_history.retain(|item| item != trimmed);
+        self.recipient_history.insert(0, trimmed.to_string());
     }
 
     fn schedule_reconnect(&mut self) {
@@ -559,18 +577,6 @@ impl Application for App {
                     self.toggle_watch(chat.id);
                 }
             }
-            AppMessage::StartSend => {
-                self.input_mode = InputMode::SendChat;
-                self.input_value.clear();
-                self.compose_content = text_editor::Content::new();
-                self.status = "send: enter message".to_string();
-            }
-            AppMessage::StartDirect => {
-                self.input_mode = InputMode::DirectTo;
-                self.input_value.clear();
-                self.input_target = None;
-                self.status = "send: enter recipient".to_string();
-            }
             AppMessage::StartReaction => {
                 if let Some(index) = self.selected_message {
                     if let Some(message) = self.messages.get(index) {
@@ -578,7 +584,7 @@ impl Application for App {
                             self.status = "selected message missing guid".to_string();
                         } else {
                             self.input_mode = InputMode::Reaction;
-                            self.input_value.clear();
+                            self.reaction_input.clear();
                             self.reaction_target = Some(message.guid.clone());
                             self.status = "reaction: enter reaction".to_string();
                         }
@@ -587,75 +593,71 @@ impl Application for App {
                     self.status = "select a message first".to_string();
                 }
             }
-            AppMessage::InputChanged(value) => {
-                self.input_value = value;
+            AppMessage::ComposeToChanged(value) => {
+                self.compose_to = value;
             }
             AppMessage::ComposeAction(action) => {
                 self.compose_content.perform(action);
             }
-            AppMessage::SubmitInput => match self.input_mode {
-                InputMode::None => {}
-                InputMode::SendChat => {
-                    if let Some(chat) = self.chats.get(self.selected) {
-                        let text = self.compose_content.text().trim().to_string();
-                        if !text.is_empty() {
-                            self.request_send_chat(chat.id, &text);
+            AppMessage::SendCompose => {
+                let text = self.compose_content.text().trim().to_string();
+                if text.is_empty() {
+                    self.status = "message text required".to_string();
+                    return Command::none();
+                }
+                let target = self.compose_to.trim().to_string();
+                if target.is_empty() {
+                    if let Some(chat) = self.chats.get(self.selected).cloned() {
+                        self.request_send_chat(chat.id, &text);
+                        if !chat.identifier.is_empty() {
+                            self.record_recipient(&chat.identifier);
                         }
+                        self.compose_content = text_editor::Content::new();
+                        self.status = "sent".to_string();
+                    } else {
+                        self.status = "no chat selected".to_string();
                     }
-                    self.input_mode = InputMode::None;
-                    self.input_value.clear();
+                } else if looks_like_handle(&target) {
+                    self.request_send_to(&target, &text);
+                    self.record_recipient(&target);
                     self.compose_content = text_editor::Content::new();
+                    self.status = "sent".to_string();
+                } else {
+                    self.contact_query = Some(target.clone());
+                    self.status = "searching contacts...".to_string();
+                    self.request_contact_search(&target);
                 }
-                InputMode::DirectTo => {
-                    let target = self.input_value.trim().to_string();
-                    if !target.is_empty() {
-                        if looks_like_handle(&target) {
-                            self.input_target = Some(target);
-                            self.input_value.clear();
-                            self.input_mode = InputMode::DirectText;
-                            self.compose_content = text_editor::Content::new();
-                            self.status = "send: enter message".to_string();
-                        } else {
-                            self.contact_query = Some(target.clone());
-                            self.status = "searching contacts...".to_string();
-                            self.request_contact_search(&target);
-                        }
-                    }
-                }
-                InputMode::DirectText => {
-                    let text = self.compose_content.text().trim().to_string();
-                    if let Some(target) = self.input_target.clone() {
-                        if !text.is_empty() {
-                            self.request_send_to(&target, &text);
-                        }
-                    }
-                    self.input_mode = InputMode::None;
-                    self.input_target = None;
-                    self.input_value.clear();
-                    self.compose_content = text_editor::Content::new();
-                }
-                InputMode::Reaction => {
-                    let reaction = self.input_value.trim().to_string();
-                    if let Some(target) = self.reaction_target.clone() {
-                        if !reaction.is_empty() {
-                            self.request_reaction(&target, &reaction);
-                        } else {
-                            self.status = "reaction required".to_string();
-                        }
-                    }
-                    self.input_mode = InputMode::None;
-                    self.input_value.clear();
-                    self.reaction_target = None;
-                }
-            },
-            AppMessage::CancelInput => {
-                self.input_mode = InputMode::None;
-                self.input_value.clear();
-                self.input_target = None;
+            }
+            AppMessage::ClearCompose => {
+                self.compose_to.clear();
                 self.compose_content = text_editor::Content::new();
+                self.status = "cleared".to_string();
+            }
+            AppMessage::ToggleHelp => {
+                self.show_help = !self.show_help;
+            }
+            AppMessage::ReactionInputChanged(value) => {
+                self.reaction_input = value;
+            }
+            AppMessage::SubmitReaction => {
+                let reaction = self.reaction_input.trim().to_string();
+                if let Some(target) = self.reaction_target.clone() {
+                    if !reaction.is_empty() {
+                        self.request_reaction(&target, &reaction);
+                        self.status = "reaction sent".to_string();
+                    } else {
+                        self.status = "reaction required".to_string();
+                    }
+                }
+                self.input_mode = InputMode::None;
+                self.reaction_input.clear();
                 self.reaction_target = None;
-                self.contact_query = None;
-                self.status = "cancelled".to_string();
+            }
+            AppMessage::CancelReaction => {
+                self.input_mode = InputMode::None;
+                self.reaction_input.clear();
+                self.reaction_target = None;
+                self.status = "reaction cancelled".to_string();
             }
             AppMessage::OpenUrl(url) => {
                 if open_url(&url).is_ok() {
@@ -797,52 +799,73 @@ impl Application for App {
             button(text("Refresh")).on_press(AppMessage::RefreshChats),
             button(text("History")).on_press(AppMessage::LoadHistory),
             button(text("Watch")).on_press(AppMessage::ToggleWatch),
-            button(text("Send")).on_press(AppMessage::StartSend),
-            button(text("Direct")).on_press(AppMessage::StartDirect),
             button(text("React")).on_press(AppMessage::StartReaction),
+            button(text("Help")).on_press(AppMessage::ToggleHelp),
         ]
         .spacing(10);
 
-        let input_row = match self.input_mode {
-            InputMode::DirectTo => {
-                let input = text_input("recipient", &self.input_value)
-                    .on_input(AppMessage::InputChanged)
-                    .on_submit(AppMessage::SubmitInput)
-                    .padding(8)
-                    .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
-                row![input]
-            }
-            InputMode::SendChat | InputMode::DirectText => {
-                let editor = text_editor(&self.compose_content)
-                    .on_action(AppMessage::ComposeAction)
-                    .height(Length::Fixed(120.0));
-                row![editor]
-            }
-            InputMode::Reaction => {
-                let input = text_input("reaction (like/love/emoji)", &self.input_value)
-                    .on_input(AppMessage::InputChanged)
-                    .on_submit(AppMessage::SubmitInput)
-                    .padding(8)
-                    .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
-                row![input]
-            }
-            InputMode::None => {
-                let input = text_input("select Send or Direct", &self.input_value)
-                    .on_input(AppMessage::InputChanged)
-                    .padding(8)
-                    .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
-                row![input]
-            }
-        };
+        let to_input = text_input("to (handle or name)", &self.compose_to)
+            .on_input(AppMessage::ComposeToChanged)
+            .padding(8)
+            .style(theme::TextInput::Custom(Box::new(CosmicInputStyle)));
+        let recent_pick = pick_list(
+            self.recipient_history.clone(),
+            None::<String>,
+            AppMessage::ComposeToChanged,
+        )
+        .placeholder("recent");
+        let editor = text_editor(&self.compose_content)
+            .on_action(AppMessage::ComposeAction)
+            .height(Length::Fixed(100.0));
+        let send = button(text("Send")).on_press(AppMessage::SendCompose);
+        let clear = button(text("Clear")).on_press(AppMessage::ClearCompose);
 
-        let cancel = button(text("Cancel")).on_press(AppMessage::CancelInput);
+        let compose_row = row![to_input, recent_pick, send, clear].spacing(10);
         let status = text(&self.status)
             .size(14)
             .horizontal_alignment(alignment::Horizontal::Left);
 
-        let footer = column![controls, row![input_row, cancel].spacing(10), status]
+        let footer = column![controls, compose_row, editor, status]
             .spacing(10)
             .padding(12);
+
+        if self.show_help {
+            return Container::new(text(help_text()).size(16))
+                .padding(24)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+                    background: iced::Color::from_rgb(0.08, 0.09, 0.11),
+                    text_color: Some(cosmic_text),
+                })))
+                .into();
+        }
+
+        if matches!(self.input_mode, InputMode::Reaction) {
+            let overlay = column![
+                text("Send reaction").size(18),
+                text_input("reaction (like/love/emoji)", &self.reaction_input)
+                    .on_input(AppMessage::ReactionInputChanged)
+                    .on_submit(AppMessage::SubmitReaction)
+                    .padding(8)
+                    .style(theme::TextInput::Custom(Box::new(CosmicInputStyle))),
+                row![
+                    button(text("Send")).on_press(AppMessage::SubmitReaction),
+                    button(text("Cancel")).on_press(AppMessage::CancelReaction),
+                ]
+                .spacing(10),
+            ]
+            .spacing(10);
+            return Container::new(overlay)
+                .padding(24)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+                    background: iced::Color::from_rgb(0.08, 0.09, 0.11),
+                    text_color: Some(cosmic_text),
+                })))
+                .into();
+        }
 
         let content = column![
             row![chat_panel, message_panel].height(Length::Fill),
@@ -884,6 +907,21 @@ fn open_url(url: &str) -> std::io::Result<()> {
     let mut cmd = ProcessCommand::new("xdg-open");
     cmd.arg(url).spawn()?;
     Ok(())
+}
+
+fn help_text() -> &'static str {
+    "imsg-gui help\n\
+Refresh: reload chats\n\
+History: load messages for selected chat\n\
+Watch: toggle streaming for selected chat\n\
+React: send a reaction to the selected message\n\
+Help: toggle this overlay\n\
+\n\
+Compose\n\
+To: leave empty to send to selected chat\n\
+Use Recent to pick previous recipients\n\
+Send: send compose message\n\
+Clear: reset compose fields\n"
 }
 
 fn looks_like_handle(value: &str) -> bool {

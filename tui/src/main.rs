@@ -10,7 +10,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Terminal,
 };
 use linkify::LinkFinder;
@@ -109,10 +109,14 @@ enum PendingRequest {
 #[derive(Debug)]
 enum InputMode {
     Normal,
-    SendText,
-    SendTo,
-    SendDirectText,
+    Compose,
     Reaction,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ComposeField {
+    To,
+    Body,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,7 +136,6 @@ struct App {
     contacts: HashMap<String, String>,
     input: String,
     input_mode: InputMode,
-    input_target: Option<String>,
     reaction_target: Option<String>,
     contact_query: Option<String>,
     notify: bool,
@@ -143,6 +146,13 @@ struct App {
     reconnect_at: Option<Instant>,
     reconnect_attempts: u32,
     config: RpcConfig,
+    compose_to: String,
+    compose_body: String,
+    compose_field: ComposeField,
+    recipient_history: Vec<String>,
+    history_index: Option<usize>,
+    contact_suggestions: Vec<(String, String)>,
+    show_help: bool,
 }
 
 impl App {
@@ -158,7 +168,6 @@ impl App {
             contacts: HashMap::new(),
             input: String::new(),
             input_mode: InputMode::Normal,
-            input_target: None,
             reaction_target: None,
             contact_query: None,
             notify,
@@ -169,6 +178,13 @@ impl App {
             reconnect_at: None,
             reconnect_attempts: 0,
             config,
+            compose_to: String::new(),
+            compose_body: String::new(),
+            compose_field: ComposeField::To,
+            recipient_history: Vec::new(),
+            history_index: None,
+            contact_suggestions: Vec::new(),
+            show_help: false,
         }
     }
 }
@@ -234,9 +250,7 @@ fn run_app(
 fn handle_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match app.input_mode {
         InputMode::Normal => handle_normal_key(client, app, key),
-        InputMode::SendText => handle_input_text(client, app, key, false),
-        InputMode::SendTo => handle_input_to(client, app, key),
-        InputMode::SendDirectText => handle_input_text(client, app, key, true),
+        InputMode::Compose => handle_compose_key(client, app, key),
         InputMode::Reaction => handle_input_reaction(client, app, key),
     }
 }
@@ -250,6 +264,7 @@ fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io
                 FocusPane::Messages => FocusPane::Chats,
             };
         }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
         KeyCode::Char('r') => request_chats(client, app),
         KeyCode::Up | KeyCode::Down => handle_arrow_navigation(app, key.code),
         KeyCode::Char('k') => handle_scroll_messages(app, -1),
@@ -258,16 +273,14 @@ fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io
         KeyCode::PageDown => handle_scroll_messages(app, 10),
         KeyCode::Enter => handle_enter(client, app),
         KeyCode::Char('w') => handle_watch(client, app),
-        KeyCode::Char('s') => handle_send(app),
+        KeyCode::Char('s') => begin_compose(app, ComposeField::Body),
+        KeyCode::Char('n') => begin_compose(app, ComposeField::To),
+        KeyCode::Char('c') => begin_compose(app, ComposeField::Body),
         KeyCode::Char('o') => handle_open_url(app),
         KeyCode::Char('R') => handle_reaction(app),
-        KeyCode::Char('n') => {
-            app.input_mode = InputMode::SendTo;
-            app.input.clear();
-            app.input_target = None;
-            app.status = "send: enter recipient".to_string();
+        KeyCode::Char('h') | KeyCode::Char('?') => {
+            app.show_help = !app.show_help;
         }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
         _ => {}
     }
     Ok(false)
@@ -335,14 +348,10 @@ fn handle_watch(client: &mut RpcClient, app: &mut App) {
     }
 }
 
-fn handle_send(app: &mut App) {
-    if app.chats.get(app.selected).is_some() {
-        app.input_mode = InputMode::SendText;
-        app.input.clear();
-        app.status = "send: enter text (enter to send, esc to cancel)".to_string();
-    } else {
-        app.status = "no chat selected".to_string();
-    }
+fn begin_compose(app: &mut App, field: ComposeField) {
+    app.input_mode = InputMode::Compose;
+    app.compose_field = field;
+    app.status = "compose: tab switch field, shift-tab recent, enter send".to_string();
 }
 
 fn sender_display(app: &App, sender: &str) -> String {
@@ -502,74 +511,58 @@ fn handle_reaction(app: &mut App) {
     }
 }
 
-fn handle_input_to(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Result<bool> {
+fn handle_compose_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io::Result<bool> {
     match key.code {
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
-            app.input.clear();
             app.status = "cancelled".to_string();
         }
         KeyCode::Enter => {
-            let value = app.input.trim().to_string();
-            if value.is_empty() {
-                app.status = "recipient required".to_string();
-            } else {
-                if looks_like_handle(&value) {
-                    app.input_target = Some(value);
-                    app.input.clear();
-                    app.input_mode = InputMode::SendDirectText;
-                    app.status = "send: enter text (enter to send, esc to cancel)".to_string();
-                } else {
-                    app.contact_query = Some(value);
-                    app.status = "searching contacts...".to_string();
-                    if let Some(query) = app.contact_query.clone() {
-                        request_contact_search(client, app, &query);
+            match app.compose_field {
+                ComposeField::To => {
+                    if let Some((_, handle)) = app.contact_suggestions.first().cloned() {
+                        app.compose_to = handle;
+                    }
+                    app.compose_field = ComposeField::Body;
+                }
+                ComposeField::Body => {
+                    if send_compose(client, app) {
+                        app.input_mode = InputMode::Normal;
                     }
                 }
             }
         }
         KeyCode::Backspace => {
-            app.input.pop();
-        }
-        KeyCode::Char(c) => app.input.push(c),
-        _ => {}
-    }
-    Ok(false)
-}
-
-fn handle_input_text(
-    client: &mut RpcClient,
-    app: &mut App,
-    key: KeyEvent,
-    direct: bool,
-) -> io::Result<bool> {
-    match key.code {
-        KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-            app.input.clear();
-            app.status = "cancelled".to_string();
-        }
-        KeyCode::Enter => {
-            let text = app.input.trim().to_string();
-            if text.is_empty() {
-                app.status = "message text required".to_string();
-            } else {
-                if direct {
-                    if let Some(target) = app.input_target.clone() {
-                        request_send_to(client, app, &target, &text);
-                    }
-                } else if let Some(chat) = app.chats.get(app.selected) {
-                    request_send_chat(client, app, chat.id, &text);
+            match app.compose_field {
+                ComposeField::To => {
+                    app.compose_to.pop();
+                    refresh_contact_suggestions(client, app);
                 }
-                app.input_mode = InputMode::Normal;
-                app.input.clear();
-                app.input_target = None;
+                ComposeField::Body => {
+                    app.compose_body.pop();
+                }
             }
         }
-        KeyCode::Backspace => {
-            app.input.pop();
+        KeyCode::Tab => {
+            app.compose_field = match app.compose_field {
+                ComposeField::To => ComposeField::Body,
+                ComposeField::Body => ComposeField::To,
+            };
         }
-        KeyCode::Char(c) => app.input.push(c),
+        KeyCode::BackTab => {
+            cycle_recipient_history(app);
+        }
+        KeyCode::Char(c) => {
+            match app.compose_field {
+                ComposeField::To => {
+                    app.compose_to.push(c);
+                    refresh_contact_suggestions(client, app);
+                }
+                ComposeField::Body => {
+                    app.compose_body.push(c);
+                }
+            }
+        }
         _ => {}
     }
     Ok(false)
@@ -607,6 +600,113 @@ fn handle_input_reaction(
         _ => {}
     }
     Ok(false)
+}
+
+fn send_compose(client: &mut RpcClient, app: &mut App) -> bool {
+    let text = app.compose_body.trim().to_string();
+    if text.is_empty() {
+        app.status = "message text required".to_string();
+        return false;
+    }
+    let target = app.compose_to.trim().to_string();
+    if target.is_empty() {
+        if let Some(chat) = app.chats.get(app.selected).cloned() {
+            request_send_chat(client, app, chat.id, &text);
+            if !chat.identifier.is_empty() {
+                record_recipient(app, &chat.identifier);
+            }
+            app.compose_body.clear();
+            app.status = "sent".to_string();
+            return true;
+        }
+        app.status = "no chat selected".to_string();
+        return false;
+    }
+    if looks_like_handle(&target) {
+        request_send_to(client, app, &target, &text);
+        record_recipient(app, &target);
+        app.compose_body.clear();
+        app.status = "sent".to_string();
+        return true;
+    }
+    if let Some((_, handle)) = app.contact_suggestions.first().cloned() {
+        request_send_to(client, app, &handle, &text);
+        app.compose_to = handle.clone();
+        record_recipient(app, &handle);
+        app.compose_body.clear();
+        app.status = "sent".to_string();
+        return true;
+    }
+    app.status = "unknown recipient; enter handle".to_string();
+    false
+}
+
+fn record_recipient(app: &mut App, handle: &str) {
+    let trimmed = handle.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    app.recipient_history.retain(|item| item != trimmed);
+    app.recipient_history.insert(0, trimmed.to_string());
+    app.history_index = None;
+}
+
+fn cycle_recipient_history(app: &mut App) {
+    if app.recipient_history.is_empty() {
+        return;
+    }
+    let next = match app.history_index {
+        Some(index) => (index + 1) % app.recipient_history.len(),
+        None => 0,
+    };
+    app.history_index = Some(next);
+    app.compose_to = app.recipient_history[next].clone();
+}
+
+fn refresh_contact_suggestions(client: &mut RpcClient, app: &mut App) {
+    let query = app.compose_to.trim().to_string();
+    if query.len() < 2 || looks_like_handle(&query) {
+        app.contact_suggestions.clear();
+        return;
+    }
+    app.contact_query = Some(query.clone());
+    request_contact_search(client, app, &query);
+}
+
+fn help_text() -> &'static str {
+    "imsg-tui help\n\
+q quit  Tab focus  Enter history  w watch  r refresh\n\
+s send (compose)  n new (compose to)  c compose\n\
+R react  o open url  PgUp/PgDn scroll  j/k scroll\n\
+\n\
+compose mode\n\
+Tab switch field  Shift-Tab recent recipient\n\
+Enter send  Esc cancel\n"
+}
+
+fn centered_rect(area: ratatui::layout::Rect, width_ratio: u16, height_ratio: u16) -> ratatui::layout::Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - height_ratio) / 2),
+                Constraint::Percentage(height_ratio),
+                Constraint::Percentage((100 - height_ratio) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - width_ratio) / 2),
+                Constraint::Percentage(width_ratio),
+                Constraint::Percentage((100 - width_ratio) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(popup_layout[1])[1]
 }
 
 fn request_chats(client: &mut RpcClient, app: &mut App) {
@@ -763,9 +863,11 @@ fn handle_rpc_error(app: &mut App, pending: PendingRequest, error: &Value) {
         }
         PendingRequest::ContactSearch => {
             app.status = "contact search unavailable; enter handle".to_string();
+            app.contact_suggestions.clear();
             if let Some(query) = app.contact_query.take() {
-                app.input = query;
-                app.input_mode = InputMode::SendTo;
+                app.compose_to = query;
+                app.input_mode = InputMode::Compose;
+                app.compose_field = ComposeField::To;
             }
         }
         _ => {
@@ -843,6 +945,7 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
             app.message_index = 0;
             app.message_offset = 0;
             app.status = "history loaded".to_string();
+            app.contact_suggestions.clear();
             let handles: Vec<String> = app
                 .messages
                 .iter()
@@ -890,23 +993,26 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
                 .cloned()
                 .unwrap_or_default();
             let mut handles = Vec::new();
+            let mut suggestions = Vec::new();
             for entry in matches {
+                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(list) = entry.get("handles").and_then(|v| v.as_array()) {
                     for handle in list {
                         if let Some(value) = handle.as_str() {
                             handles.push(value.to_string());
+                            let label = if name.is_empty() {
+                                value.to_string()
+                            } else {
+                                format!("{name} <{value}>")
+                            };
+                            suggestions.push((label, value.to_string()));
                         }
                     }
                 }
             }
-            if handles.len() == 1 {
-                app.input_target = Some(handles[0].clone());
-                app.input_mode = InputMode::SendDirectText;
-                app.status = "send: enter text (enter to send, esc to cancel)".to_string();
-            } else if handles.is_empty() {
+            app.contact_suggestions = suggestions;
+            if handles.is_empty() {
                 app.status = "no contact matches; enter handle".to_string();
-            } else {
-                app.status = "multiple matches; enter handle".to_string();
             }
             app.contact_query = None;
         }
@@ -1061,7 +1167,7 @@ mod tests {
 fn ui(frame: &mut ratatui::Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3)].as_ref())
+        .constraints([Constraint::Min(1), Constraint::Length(6)].as_ref())
         .split(frame.size());
 
     let body = Layout::default()
@@ -1144,26 +1250,57 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(messages, body[1]);
 
-    let input_label = match app.input_mode {
-        InputMode::Normal => "Status",
-        InputMode::SendText => "Send message",
-        InputMode::SendTo => "Send to",
-        InputMode::SendDirectText => "Send message",
-        InputMode::Reaction => "Reaction",
-    };
-    let mut status_text = if matches!(app.input_mode, InputMode::Normal) {
-        app.status.clone()
+    let compose_active = matches!(app.input_mode, InputMode::Compose);
+    let compose_title = if compose_active {
+        "Compose *"
     } else {
-        app.input.clone()
+        "Compose"
     };
-    if matches!(app.input_mode, InputMode::Normal) {
-        status_text.push_str("\nkeys: Tab focus  Enter history  s send  n new  R react  o open");
-    } else if matches!(app.input_mode, InputMode::SendTo) {
-        status_text.push_str("\nenter a handle or name, Enter to confirm, Esc to cancel");
+    let mut compose_line = format!(
+        "To: {} | Msg: {}",
+        if app.compose_to.is_empty() {
+            "<chat>".to_string()
+        } else {
+            app.compose_to.clone()
+        },
+        if app.compose_body.is_empty() {
+            "<type message>".to_string()
+        } else {
+            app.compose_body.clone()
+        }
+    );
+    if let Some((label, _)) = app.contact_suggestions.first() {
+        compose_line.push_str(&format!(" | suggest: {label}"));
     }
+    let status_text = format!(
+        "{}\n{}",
+        app.status,
+        if compose_active {
+            "Tab switch field, Shift-Tab recent, Enter send, Esc cancel"
+        } else {
+            "Tab focus, s send, n new, c compose, R react, o open, h help"
+        }
+    );
+    let footer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(3)].as_ref())
+        .split(chunks[1]);
+    let compose = Paragraph::new(compose_line)
+        .block(Block::default().title(compose_title).borders(Borders::ALL));
+    frame.render_widget(compose, footer[0]);
+
     let status = Paragraph::new(status_text)
-        .block(Block::default().title(input_label).borders(Borders::ALL));
-    frame.render_widget(status, chunks[1]);
+        .block(Block::default().title("Status").borders(Borders::ALL));
+    frame.render_widget(status, footer[1]);
+
+    if app.show_help {
+        let area = centered_rect(frame.size(), 75, 75);
+        frame.render_widget(Clear, area);
+        let help = Paragraph::new(help_text())
+            .block(Block::default().title("Help").borders(Borders::ALL))
+            .wrap(ratatui::widgets::Wrap { trim: true });
+        frame.render_widget(help, area);
+    }
 }
 
 fn app_state_list(app: &App) -> ratatui::widgets::ListState {
