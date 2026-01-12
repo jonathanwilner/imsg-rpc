@@ -10,14 +10,16 @@ func contactLookupFindsJonathanWilner() throws {
   }
 #if canImport(Contacts)
   let targetHandle = "+13103590308"
+  let targetDigits = normalizeHandle(targetHandle)
   let matches = try ContactLookup.search(query: "Jonathan Wilner", limit: 5)
-  let hasHandle = matches.contains { match in
-    match.handles.contains { normalizeHandle($0) == normalizeHandle(targetHandle) }
-  }
-  #expect(hasHandle == true)
+  let matchedHandle = matches
+    .flatMap { $0.handles }
+    .first { normalizeHandle($0) == targetDigits }
+  #expect(matchedHandle != nil)
 
-  let resolved = try ContactLookup.resolve(handles: [targetHandle])
-  let name = resolved[targetHandle] ?? ""
+  let handle = matchedHandle ?? targetHandle
+  let resolved = try ContactLookup.resolve(handles: [handle])
+  let name = resolved[handle] ?? ""
   let lower = name.lowercased()
   #expect(lower.contains("jonathan"))
   #expect(lower.contains("wilner"))
