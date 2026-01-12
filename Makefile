@@ -35,7 +35,7 @@ build:
 	scripts/build-universal.sh
 
 rpc-app:
-	scripts/update-rpc-app.sh
+	IMSG_RPC_APP_RELOAD=1 scripts/update-rpc-app.sh
 
 imsg:
 	scripts/generate-version.sh

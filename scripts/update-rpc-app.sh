@@ -69,8 +69,18 @@ PLIST
     printf "socat not found; skipping bundled socat\n" >&2
   fi
 
-  codesign --force --deep --sign - "${target}" || return 1
-  printf "Updated %s\n" "${target}"
+codesign --force --deep --sign - "${target}" || return 1
+printf "Updated %s\n" "${target}"
+if [[ "${IMSG_RPC_APP_RELOAD:-}" == "1" ]]; then
+  if [[ -f "${HOME}/Library/LaunchAgents/com.jonathan.imsg.rpc.socat.plist" ]]; then
+    launchctl unload "${HOME}/Library/LaunchAgents/com.jonathan.imsg.rpc.socat.plist" || true
+    launchctl load "${HOME}/Library/LaunchAgents/com.jonathan.imsg.rpc.socat.plist"
+  fi
+  if [[ -f "${HOME}/Library/LaunchAgents/com.jonathan.imsg.rpc.plist" ]]; then
+    launchctl unload "${HOME}/Library/LaunchAgents/com.jonathan.imsg.rpc.plist" || true
+    launchctl load "${HOME}/Library/LaunchAgents/com.jonathan.imsg.rpc.plist"
+  fi
+fi
   return 0
 }
 
