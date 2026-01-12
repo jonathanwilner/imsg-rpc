@@ -708,9 +708,14 @@ fn handle_rpc_events(client: &mut RpcClient, app: &mut App) {
             }
             RpcEvent::Error { id, error } => {
                 if let Some(request_id) = id {
-                    app.pending.remove(&request_id);
+                    if let Some(pending) = app.pending.remove(&request_id) {
+                        handle_rpc_error(app, pending, &error);
+                    } else {
+                        app.status = format!("rpc error: {error}");
+                    }
+                } else {
+                    app.status = format!("rpc error: {error}");
                 }
-                app.status = format!("rpc error: {error}");
             }
             RpcEvent::Notification { method, params } => {
                 if method == "message" {
@@ -741,6 +746,33 @@ fn handle_rpc_events(client: &mut RpcClient, app: &mut App) {
             RpcEvent::Closed { message } => {
                 app.status = format!("rpc closed: {message}");
                 schedule_reconnect(app);
+            }
+        }
+    }
+}
+
+fn handle_rpc_error(app: &mut App, pending: PendingRequest, error: &Value) {
+    let code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+    let message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("rpc error");
+    match pending {
+        PendingRequest::ResolveContacts => {
+            app.status = "contacts unavailable; names disabled".to_string();
+        }
+        PendingRequest::ContactSearch => {
+            app.status = "contact search unavailable; enter handle".to_string();
+            if let Some(query) = app.contact_query.take() {
+                app.input = query;
+                app.input_mode = InputMode::SendTo;
+            }
+        }
+        _ => {
+            if code != 0 {
+                app.status = format!("rpc error ({code}): {message}");
+            } else {
+                app.status = format!("rpc error: {message}");
             }
         }
     }
@@ -1119,11 +1151,16 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         InputMode::SendDirectText => "Send message",
         InputMode::Reaction => "Reaction",
     };
-    let status_text = if matches!(app.input_mode, InputMode::Normal) {
+    let mut status_text = if matches!(app.input_mode, InputMode::Normal) {
         app.status.clone()
     } else {
         app.input.clone()
     };
+    if matches!(app.input_mode, InputMode::Normal) {
+        status_text.push_str("\nkeys: Tab focus  Enter history  s send  n new  R react  o open");
+    } else if matches!(app.input_mode, InputMode::SendTo) {
+        status_text.push_str("\nenter a handle or name, Enter to confirm, Esc to cancel");
+    }
     let status = Paragraph::new(status_text)
         .block(Block::default().title(input_label).borders(Borders::ALL));
     frame.render_widget(status, chunks[1]);

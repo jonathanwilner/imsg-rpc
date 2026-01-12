@@ -372,11 +372,18 @@ final class RPCServer {
       throw RPCError.invalidParams("query is required")
     }
     let limit = intParam(params["limit"]) ?? 10
-    let matches = try contactSearch(query, max(limit, 1))
-    let payloads = matches.map { match in
-      ["name": match.name, "handles": match.handles]
+    do {
+      let matches = try contactSearch(query, max(limit, 1))
+      let payloads = matches.map { match in
+        ["name": match.name, "handles": match.handles]
+      }
+      respond(id: id, result: ["matches": payloads])
+    } catch let err as ContactLookupError {
+      switch err {
+      case .unauthorized:
+        respond(id: id, result: ["matches": [], "warning": "contacts_unavailable"])
+      }
     }
-    respond(id: id, result: ["matches": payloads])
   }
 
   private func handleContactResolve(params: [String: Any], id: Any?) throws {
@@ -384,11 +391,18 @@ final class RPCServer {
     if handles.isEmpty {
       throw RPCError.invalidParams("handles is required")
     }
-    let resolved = try contactResolve(handles)
-    let payloads = resolved.map { handle, name in
-      ["handle": handle, "name": name]
+    do {
+      let resolved = try contactResolve(handles)
+      let payloads = resolved.map { handle, name in
+        ["handle": handle, "name": name]
+      }
+      respond(id: id, result: ["contacts": payloads])
+    } catch let err as ContactLookupError {
+      switch err {
+      case .unauthorized:
+        respond(id: id, result: ["contacts": [], "warning": "contacts_unavailable"])
+      }
     }
-    respond(id: id, result: ["contacts": payloads])
   }
 
   private func requireDependencies() throws -> (MessageStore, MessageWatcher, ChatCache) {

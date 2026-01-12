@@ -408,6 +408,51 @@ func rpcContactsResolveReturnsContacts() async throws {
 }
 
 @Test
+func rpcContactsSearchHandlesUnauthorized() async throws {
+  let store = try RPCTestDatabase.makeStore()
+  let output = TestRPCOutput()
+  let server = RPCServer(
+    store: store,
+    verbose: false,
+    output: output,
+    contactSearch: { _, _ in
+      throw ContactLookupError.unauthorized
+    }
+  )
+
+  let line = #"{"jsonrpc":"2.0","id":17,"method":"contacts.search","params":{"query":"Ali"}}"#
+  await server.handleLineForTesting(line)
+
+  let result = output.responses.first?["result"] as? [String: Any]
+  let matches = result?["matches"] as? [[String: Any]] ?? []
+  #expect(matches.isEmpty)
+  #expect(result?["warning"] as? String == "contacts_unavailable")
+}
+
+@Test
+func rpcContactsResolveHandlesUnauthorized() async throws {
+  let store = try RPCTestDatabase.makeStore()
+  let output = TestRPCOutput()
+  let server = RPCServer(
+    store: store,
+    verbose: false,
+    output: output,
+    contactResolve: { _ in
+      throw ContactLookupError.unauthorized
+    }
+  )
+
+  let line =
+    #"{"jsonrpc":"2.0","id":18,"method":"contacts.resolve","params":{"handles":["+15551234567"]}}"#
+  await server.handleLineForTesting(line)
+
+  let result = output.responses.first?["result"] as? [String: Any]
+  let contacts = result?["contacts"] as? [[String: Any]] ?? []
+  #expect(contacts.isEmpty)
+  #expect(result?["warning"] as? String == "contacts_unavailable")
+}
+
+@Test
 func rpcReactionSendResolvesChatID() async throws {
   let store = try RPCTestDatabase.makeStore()
   let output = TestRPCOutput()
