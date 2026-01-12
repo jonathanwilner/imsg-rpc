@@ -126,13 +126,20 @@ enum FocusPane {
     Compose,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum WatchMode {
+    None,
+    Chat(i64),
+    All,
+}
+
 struct App {
     chats: Vec<Chat>,
     messages: Vec<Message>,
     selected: usize,
     status: String,
     watch_subscription: Option<String>,
-    watch_chat_id: Option<i64>,
+    watch_mode: WatchMode,
     pending: HashMap<String, PendingRequest>,
     contacts: HashMap<String, String>,
     input: String,
@@ -164,7 +171,7 @@ impl App {
             selected: 0,
             status: "ready".to_string(),
             watch_subscription: None,
-            watch_chat_id: None,
+            watch_mode: WatchMode::None,
             pending: HashMap::new(),
             contacts: HashMap::new(),
             input: String::new(),
@@ -225,6 +232,10 @@ fn run_app(
 ) -> io::Result<()> {
     let mut app = App::new(notify, config);
     request_chats(client, &mut app);
+    if app.notify {
+        request_watch_subscribe(client, &mut app, None);
+        app.watch_mode = WatchMode::All;
+    }
 
     loop {
         terminal.draw(|frame| ui(frame, &app))?;
@@ -796,26 +807,23 @@ fn toggle_watch(client: &mut RpcClient, app: &mut App, chat_id: i64) {
             );
             app.pending.insert(id, PendingRequest::WatchUnsubscribe);
             app.status = "unsubscribing...".to_string();
-            app.watch_chat_id = None;
+            app.watch_mode = WatchMode::None;
         }
         return;
     }
-    app.watch_chat_id = Some(chat_id);
-    let id = client.send_request(
-        "watch.subscribe",
-        Some(serde_json::json!({ "chat_id": chat_id })),
-    );
-    app.pending.insert(id, PendingRequest::WatchSubscribe);
-    app.status = "subscribing...".to_string();
+    app.watch_mode = WatchMode::Chat(chat_id);
+    request_watch_subscribe(client, app, Some(chat_id));
 }
 
-fn request_watch_subscribe(client: &mut RpcClient, app: &mut App, chat_id: i64) {
-    let id = client.send_request(
-        "watch.subscribe",
-        Some(serde_json::json!({ "chat_id": chat_id })),
-    );
+fn request_watch_subscribe(client: &mut RpcClient, app: &mut App, chat_id: Option<i64>) {
+    let params = chat_id.map(|id| serde_json::json!({ "chat_id": id }));
+    let id = client.send_request("watch.subscribe", params);
     app.pending.insert(id, PendingRequest::WatchSubscribe);
-    app.status = "subscribing...".to_string();
+    app.status = if chat_id.is_some() {
+        "subscribing...".to_string()
+    } else {
+        "subscribing (all chats)...".to_string()
+    };
 }
 
 fn request_send_chat(client: &mut RpcClient, app: &mut App, chat_id: i64, text: &str) {
@@ -958,8 +966,14 @@ fn handle_reconnect(client: &mut RpcClient, app: &mut App) {
             app.pending.clear();
             app.status = "reconnected".to_string();
             request_chats(client, app);
-            if let Some(chat_id) = app.watch_chat_id {
-                request_watch_subscribe(client, app, chat_id);
+            match app.watch_mode {
+                WatchMode::Chat(chat_id) => {
+                    request_watch_subscribe(client, app, Some(chat_id));
+                }
+                WatchMode::All => {
+                    request_watch_subscribe(client, app, None);
+                }
+                WatchMode::None => {}
             }
         }
         Err(err) => {
@@ -1019,12 +1033,16 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
         PendingRequest::WatchSubscribe => {
             if let Some(sub) = result.get("subscription") {
                 app.watch_subscription = Some(sub.to_string().trim_matches('"').to_string());
-                app.status = "watch subscribed".to_string();
+                app.status = match app.watch_mode {
+                    WatchMode::All => "watch subscribed (all chats)".to_string(),
+                    WatchMode::Chat(_) => "watch subscribed".to_string(),
+                    WatchMode::None => "watch subscribed".to_string(),
+                };
             }
         }
         PendingRequest::WatchUnsubscribe => {
             app.watch_subscription = None;
-            app.watch_chat_id = None;
+            app.watch_mode = WatchMode::None;
             app.status = "watch unsubscribed".to_string();
         }
         PendingRequest::Send => {
