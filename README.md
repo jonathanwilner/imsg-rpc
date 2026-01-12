@@ -1,5 +1,7 @@
 # 💬 imsg — Send, read, stream iMessage & SMS
 
+Note: this repository is mirrored at `https://github.com/jonathanwilner/imsg-rpc`.
+
 A macOS Messages.app CLI to send, read, and stream iMessage/SMS (with attachment metadata). Read-only for receives; send uses AppleScript (no private APIs).
 
 ## Features
