@@ -37,6 +37,17 @@
             postInstall = ''
               install -Dm755 nixos/imsg-gui-net $out/bin/imsg-gui-net
               install -Dm644 nixos/imsg-gui.desktop $out/share/applications/imsg-gui.desktop
+              wrapProgram $out/bin/imsg-gui \
+                --set WINIT_UNIX_BACKEND wayland \
+                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [
+                  pkgs.libxkbcommon
+                  pkgs.wayland
+                  pkgs.xorg.libX11
+                  pkgs.xorg.libXcursor
+                  pkgs.xorg.libXi
+                  pkgs.xorg.libXrandr
+                  pkgs.xorg.libXinerama
+                ]}
             '';
           };
         });
