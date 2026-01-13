@@ -231,13 +231,19 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
    (t (format "%s" value))))
 
 (defun imsg--filter (_proc chunk)
+  (unless (stringp chunk)
+    (setq chunk ""))
   (setq imsg--partial (concat imsg--partial chunk))
   (while (string-match "\n" imsg--partial)
     (let ((line (substring imsg--partial 0 (match-beginning 0))))
       (setq imsg--partial (substring imsg--partial (match-end 0)))
       (unless (string-empty-p line)
         (condition-case err
-            (imsg--dispatch (imsg--json-read line))
+            (let ((payload (imsg--json-read line)))
+              (condition-case handler-err
+                  (imsg--dispatch payload)
+                (error
+                 (message "imsg: failed to handle payload: %s (%s)" line handler-err))))
           (error
            (message "imsg: failed to parse line: %s (%s)" line err)))))))
 
@@ -256,7 +262,10 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
          (error (alist-get 'error payload nil nil #'equal)))
     (remhash id imsg--pending)
     (when callback
-      (funcall callback result error))))
+      (condition-case err
+          (funcall callback result error)
+        (error
+         (message "imsg: response handler error: %s" err))))))
 
 (defun imsg--handle-notification (payload)
   (let* ((method (alist-get 'method payload nil nil #'equal))
@@ -836,6 +845,7 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
 (defvar imsg-history-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'imsg-history-compose)
+    (define-key map (kbd "r") #'imsg-history-reply)
     (define-key map (kbd "C-c C-t") #'imsg-transient)
     map))
 
@@ -875,6 +885,13 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
 
 (defun imsg-history-compose ()
   "Compose a message to the chat in the history buffer."
+  (interactive)
+  (if imsg--history-chat-id
+      (imsg-compose-chat imsg--history-chat-id)
+    (message "imsg: no chat id in this buffer")))
+
+(defun imsg-history-reply ()
+  "Reply to the chat shown in the history buffer."
   (interactive)
   (if imsg--history-chat-id
       (imsg-compose-chat imsg--history-chat-id)
@@ -920,15 +937,16 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     ("s" "status" imsg-status)
     ("k" "stop" imsg-stop)]
    ["Chats/Messages"
-   ("c" "list chats" imsg-chats-list-interactive)
+    ("l" "list chats" imsg-chats-list-interactive)
     ("h" "history" imsg-history-interactive)
     ("o" "open at point" imsg-chats-open-at-point)
     ("H" "history prompt" imsg-chats-history-prompt)]
    ["Send/Watch"
     ("m" "send" imsg-send-interactive)
-    ("C" "compose chat" imsg-compose-chat)
+    ("c" "compose chat" imsg-compose-chat)
     ("D" "compose direct" imsg-compose-to)
     ("L" "last recipient" imsg-compose-last-recipient)
+    ("R" "reply (history)" imsg-history-reply)
     ("w" "watch subscribe" imsg-watch-subscribe-interactive)
     ("u" "watch unsubscribe" imsg-watch-unsubscribe-interactive)]
    ["Help"
