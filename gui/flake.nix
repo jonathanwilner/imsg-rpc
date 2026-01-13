@@ -28,6 +28,7 @@
               pkgs.libxkbcommon
               pkgs.wayland
               pkgs.wayland-protocols
+              pkgs.mesa
               pkgs.xorg.libX11
               pkgs.xorg.libXcursor
               pkgs.xorg.libXi
@@ -39,9 +40,11 @@
               install -Dm644 nixos/imsg-gui.desktop $out/share/applications/imsg-gui.desktop
               wrapProgram $out/bin/imsg-gui \
                 --set WINIT_UNIX_BACKEND wayland \
+                --set WGPU_BACKEND gl \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [
                   pkgs.libxkbcommon
                   pkgs.wayland
+                  pkgs.mesa
                   pkgs.xorg.libX11
                   pkgs.xorg.libXcursor
                   pkgs.xorg.libXi
@@ -65,6 +68,7 @@
               pkgs.libxkbcommon
               pkgs.wayland
               pkgs.wayland-protocols
+              pkgs.mesa
               pkgs.xorg.libX11
               pkgs.xorg.libXcursor
               pkgs.xorg.libXi
