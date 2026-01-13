@@ -4,6 +4,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use notify_rust::Notification;
 use ratatui::{
     backend::CrosstermBackend,
@@ -16,8 +18,11 @@ use ratatui::{
 use linkify::LinkFinder;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
+    fs,
+    hash::{Hash, Hasher},
     io::{self, Stdout},
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -76,6 +81,13 @@ struct Chat {
 }
 
 #[derive(Debug, Clone)]
+struct Attachment {
+    original_path: String,
+    filename: String,
+    mime_type: String,
+}
+
+#[derive(Debug, Clone)]
 struct Message {
     chat_id: i64,
     guid: String,
@@ -85,6 +97,7 @@ struct Message {
     created_at: String,
     is_from_me: bool,
     reactions: Vec<Reaction>,
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +118,13 @@ enum PendingRequest {
     ResolveContacts,
     ContactSearch,
     Reaction,
+    AttachmentFetch,
+}
+
+#[derive(Debug, Clone)]
+struct AttachmentFetch {
+    key: String,
+    filename: String,
 }
 
 #[derive(Debug)]
@@ -162,6 +182,9 @@ struct App {
     history_index: Option<usize>,
     contact_suggestions: Vec<(String, String)>,
     show_help: bool,
+    attachment_cache: HashMap<String, String>,
+    pending_attachments: HashMap<String, AttachmentFetch>,
+    attachment_dir: PathBuf,
 }
 
 impl App {
@@ -194,6 +217,9 @@ impl App {
             history_index: None,
             contact_suggestions: Vec::new(),
             show_help: false,
+            attachment_cache: HashMap::new(),
+            pending_attachments: HashMap::new(),
+            attachment_dir: attachment_cache_dir(),
         }
     }
 }
@@ -310,6 +336,7 @@ fn handle_normal_key(client: &mut RpcClient, app: &mut App, key: KeyEvent) -> io
         KeyCode::Char('n') => begin_compose(app, ComposeField::To),
         KeyCode::Char('c') => begin_compose(app, ComposeField::Body),
         KeyCode::Char('o') => handle_open_url(app),
+        KeyCode::Char('O') => handle_open_attachment(app),
         KeyCode::Char('R') => handle_reaction(app),
         KeyCode::Char('h') | KeyCode::Char('?') => {
             app.show_help = !app.show_help;
@@ -405,6 +432,93 @@ fn sender_display(app: &App, sender: &str) -> String {
         .unwrap_or_else(|| sender.to_string())
 }
 
+fn attachment_cache_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".cache/imsg/attachments")
+    } else {
+        std::env::temp_dir().join("imsg/attachments")
+    }
+}
+
+fn attachment_key(path: &str, filename: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    filename.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn attachment_ext(path: &str, filename: &str) -> String {
+    Path::new(filename)
+        .extension()
+        .or_else(|| Path::new(path).extension())
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("bin")
+        .to_string()
+}
+
+fn attachment_is_image(attachment: &Attachment) -> bool {
+    if attachment.mime_type.starts_with("image/") {
+        return true;
+    }
+    let ext = attachment_ext(&attachment.original_path, &attachment.filename);
+    matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "heic" | "heif" | "webp"
+    )
+}
+
+fn cached_attachment_path(app: &App, attachment: &Attachment) -> Option<PathBuf> {
+    let key = attachment_key(&attachment.original_path, &attachment.filename);
+    if let Some(path) = app.attachment_cache.get(&key) {
+        return Some(PathBuf::from(path));
+    }
+    if !attachment.original_path.is_empty() && Path::new(&attachment.original_path).exists() {
+        return Some(PathBuf::from(&attachment.original_path));
+    }
+    None
+}
+
+fn ensure_cached_attachment(
+    client: &mut RpcClient,
+    app: &mut App,
+    attachment: &Attachment,
+) {
+    if !attachment_is_image(attachment) {
+        return;
+    }
+    let key = attachment_key(&attachment.original_path, &attachment.filename);
+    if app.attachment_cache.contains_key(&key)
+        || app.pending_attachments.values().any(|entry| entry.key == key)
+    {
+        return;
+    }
+    if !attachment.original_path.is_empty() && Path::new(&attachment.original_path).exists() {
+        app.attachment_cache
+            .insert(key, attachment.original_path.clone());
+        return;
+    }
+    if attachment.original_path.is_empty() {
+        return;
+    }
+    let id = client.send_request(
+        "attachments.fetch",
+        Some(serde_json::json!({ "path": attachment.original_path, "max_bytes": 20_000_000 })),
+    );
+    app.pending.insert(id.clone(), PendingRequest::AttachmentFetch);
+    app.pending_attachments.insert(
+        id,
+        AttachmentFetch {
+            key,
+            filename: attachment.filename.clone(),
+        },
+    );
+}
+
+fn fetch_attachments_for_message(client: &mut RpcClient, app: &mut App, message: &Message) {
+    for attachment in &message.attachments {
+        ensure_cached_attachment(client, app, attachment);
+    }
+}
 fn chat_participant_label(app: &App, chat: &Chat) -> String {
     let mut labels: Vec<String> = chat
         .participants
@@ -471,6 +585,10 @@ fn open_url(url: &str) -> io::Result<()> {
     let mut cmd = std::process::Command::new("xdg-open");
     cmd.arg(url).spawn()?.wait()?;
     Ok(())
+}
+
+fn open_attachment(path: &Path) -> io::Result<()> {
+    open_url(&path.to_string_lossy())
 }
 
 fn looks_like_handle(value: &str) -> bool {
@@ -565,6 +683,26 @@ fn handle_open_url(app: &mut App) {
             }
         } else {
             app.status = "no url found".to_string();
+        }
+    } else {
+        app.status = "no message selected".to_string();
+    }
+}
+
+fn handle_open_attachment(app: &mut App) {
+    if let Some(message) = current_message(app) {
+        if let Some(attachment) = message.attachments.first() {
+            if let Some(path) = cached_attachment_path(app, attachment) {
+                if open_attachment(&path).is_ok() {
+                    app.status = "opened attachment".to_string();
+                } else {
+                    app.status = "failed to open attachment".to_string();
+                }
+            } else {
+                app.status = "attachment not cached".to_string();
+            }
+        } else {
+            app.status = "no attachments".to_string();
         }
     } else {
         app.status = "no message selected".to_string();
@@ -748,7 +886,7 @@ fn help_text() -> &'static str {
     "imsg-tui help\n\
 q quit  Tab focus (chats/messages/compose)  Enter history  w watch  r refresh\n\
 s send (compose)  n new (compose to)  c compose\n\
-R react  o open url  PgUp/PgDn scroll  j/k scroll\n\
+R react  o open url  O open attachment  PgUp/PgDn scroll  j/k scroll\n\
 \n\
 compose mode\n\
 Tab switch field  Shift-Tab recent recipient\n\
@@ -871,7 +1009,7 @@ fn handle_rpc_events(client: &mut RpcClient, app: &mut App) {
         match event {
             RpcEvent::Response { id, result } => {
                 if let Some(pending) = app.pending.remove(&id) {
-                    handle_response(client, app, pending, result);
+                    handle_response(client, app, pending, result, &id);
                 }
             }
             RpcEvent::Error { id, error } => {
@@ -899,6 +1037,7 @@ fn handle_rpc_events(client: &mut RpcClient, app: &mut App) {
                         if !app.contacts.contains_key(&message.sender) {
                             request_contact_resolve(client, app, &[message.sender.clone()]);
                         }
+                        fetch_attachments_for_message(client, app, &message);
                         if app.notify && !message.is_from_me {
                             let sender = sender_display(app, &message.sender);
                             let _ = Notification::new()
@@ -943,6 +1082,9 @@ fn handle_rpc_error(app: &mut App, pending: PendingRequest, error: &Value) {
                 app.input_mode = InputMode::Compose;
                 app.compose_field = ComposeField::To;
             }
+        }
+        PendingRequest::AttachmentFetch => {
+            app.status = "attachment fetch failed".to_string();
         }
         _ => {
             let mut status = if code != 0 {
@@ -1006,7 +1148,13 @@ fn handle_reconnect(client: &mut RpcClient, app: &mut App) {
     }
 }
 
-fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingRequest, result: Value) {
+fn handle_response(
+    client: &mut RpcClient,
+    app: &mut App,
+    pending: PendingRequest,
+    result: Value,
+    request_id: &str,
+) {
     match pending {
         PendingRequest::Chats => {
             let chats = result
@@ -1048,6 +1196,10 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
             app.message_offset = 0;
             app.status = "history loaded".to_string();
             app.contact_suggestions.clear();
+            let message_snapshot = app.messages.clone();
+            for message in &message_snapshot {
+                fetch_attachments_for_message(client, app, message);
+            }
             let handles: Vec<String> = app
                 .messages
                 .iter()
@@ -1125,6 +1277,30 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
         PendingRequest::Reaction => {
             app.status = "reaction sent".to_string();
         }
+        PendingRequest::AttachmentFetch => {
+            if let Some(entry) = app.pending_attachments.remove(request_id) {
+                if let Some(data) = result.get("data").and_then(|v| v.as_str()) {
+                    let ext = attachment_ext("", &entry.filename);
+                    let filename = format!("{}.{}", entry.key, ext);
+                    let path = app.attachment_dir.join(filename);
+                    if !path.exists() {
+                        if let Ok(decoded) = BASE64.decode(data) {
+                            if fs::create_dir_all(&app.attachment_dir).is_ok()
+                                && fs::write(&path, decoded).is_ok()
+                            {
+                                app.attachment_cache.insert(
+                                    entry.key,
+                                    path.to_string_lossy().to_string(),
+                                );
+                            }
+                        }
+                    } else {
+                        app.attachment_cache
+                            .insert(entry.key, path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1201,6 +1377,40 @@ fn parse_message(value: &Value) -> Option<Message> {
                                 .get("is_from_me")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        attachments: value
+            .get("attachments")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|entry| {
+                        let original_path = entry
+                            .get("original_path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let filename = entry
+                            .get("filename")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mime_type = entry
+                            .get("mime_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if original_path.is_empty() && filename.is_empty() {
+                            return None;
+                        }
+                        Some(Attachment {
+                            original_path,
+                            filename,
+                            mime_type,
                         })
                     })
                     .collect()
@@ -1375,6 +1585,22 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         };
         let mut text_lines = styled_text_lines(&message.text, base_style, link_style);
         message_lines.append(&mut text_lines);
+        for attachment in &message.attachments {
+            let label = if attachment_is_image(attachment) {
+                let cached = cached_attachment_path(app, attachment).is_some();
+                if cached {
+                    format!("  [image] {}  ", attachment.filename)
+                } else {
+                    format!("  [image] {} (fetching)  ", attachment.filename)
+                }
+            } else {
+                format!("  [attachment] {}  ", attachment.filename)
+            };
+            message_lines.push(Line::from(vec![Span::styled(
+                label,
+                base_style.add_modifier(Modifier::DIM),
+            )]));
+        }
         if let Some(summary) = reaction_summary(&message.reactions) {
             message_lines.push(Line::from(vec![Span::styled(
                 format!("  {summary}  "),

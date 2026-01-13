@@ -2,16 +2,21 @@ use clap::{Parser, ValueEnum};
 use iced::{
     alignment, executor, theme,
     widget::{
-        button, column, container, horizontal_space, pick_list, row, scrollable, text,
+        button, column, container, horizontal_space, image, pick_list, row, scrollable, text,
         text_editor, text_input, Column, Container,
     },
     Application, Command, Element, Length, Settings, Subscription, Theme,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use linkify::LinkFinder;
 use notify_rust::Notification;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
+    fs,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
     process::Command as ProcessCommand,
     time::{Duration, Instant},
 };
@@ -53,6 +58,13 @@ struct Chat {
 }
 
 #[derive(Debug, Clone)]
+struct Attachment {
+    original_path: String,
+    filename: String,
+    mime_type: String,
+}
+
+#[derive(Debug, Clone)]
 struct MessageRow {
     chat_id: i64,
     guid: String,
@@ -62,6 +74,7 @@ struct MessageRow {
     created_at: String,
     is_from_me: bool,
     reactions: Vec<Reaction>,
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +95,13 @@ enum PendingRequest {
     ResolveContacts,
     ContactSearch,
     Reaction,
+    AttachmentFetch,
+}
+
+#[derive(Debug, Clone)]
+struct AttachmentFetch {
+    key: String,
+    filename: String,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +154,9 @@ struct App {
     config: Flags,
     recipient_history: Vec<String>,
     show_help: bool,
+    attachment_cache: HashMap<String, String>,
+    pending_attachments: HashMap<String, AttachmentFetch>,
+    attachment_dir: PathBuf,
 }
 
 impl App {
@@ -179,6 +202,9 @@ impl App {
             config: flags,
             recipient_history: Vec::new(),
             show_help: false,
+            attachment_cache: HashMap::new(),
+            pending_attachments: HashMap::new(),
+            attachment_dir: attachment_cache_dir(),
         };
 
         app.request_chats();
@@ -290,11 +316,54 @@ impl App {
         }
     }
 
+    fn request_attachment_fetch(&mut self, attachment: &Attachment) {
+        if !attachment_is_image(attachment) {
+            return;
+        }
+        let key = attachment_key(&attachment.original_path, &attachment.filename);
+        if self.attachment_cache.contains_key(&key)
+            || self.pending_attachments.values().any(|entry| entry.key == key)
+        {
+            return;
+        }
+        if !attachment.original_path.is_empty() && Path::new(&attachment.original_path).exists() {
+            self.attachment_cache
+                .insert(key, attachment.original_path.clone());
+            return;
+        }
+        if attachment.original_path.is_empty() {
+            return;
+        }
+        if let Some(client) = &mut self.client {
+            let id = client.send_request(
+                "attachments.fetch",
+                Some(serde_json::json!({
+                    "path": attachment.original_path,
+                    "max_bytes": 20_000_000
+                })),
+            );
+            self.pending.insert(id.clone(), PendingRequest::AttachmentFetch);
+            self.pending_attachments.insert(
+                id,
+                AttachmentFetch {
+                    key,
+                    filename: attachment.filename.clone(),
+                },
+            );
+        }
+    }
+
+    fn fetch_attachments_for_message(&mut self, message: &MessageRow) {
+        for attachment in &message.attachments {
+            self.request_attachment_fetch(attachment);
+        }
+    }
+
     fn handle_rpc_event(&mut self, event: RpcEvent) {
         match event {
             RpcEvent::Response { id, result } => {
                 if let Some(pending) = self.pending.remove(&id) {
-                    self.handle_response(pending, result);
+                    self.handle_response(pending, result, &id);
                 }
             }
             RpcEvent::Error { id, error } => {
@@ -317,6 +386,7 @@ impl App {
                         if !self.contacts.contains_key(&message.sender) {
                             self.request_contact_resolve(&[message.sender.clone()]);
                         }
+                        self.fetch_attachments_for_message(&message);
                         if self.notify && !message.is_from_me {
                             let sender = self
                                 .contacts
@@ -340,7 +410,7 @@ impl App {
         }
     }
 
-    fn handle_response(&mut self, pending: PendingRequest, result: Value) {
+    fn handle_response(&mut self, pending: PendingRequest, result: Value, request_id: &str) {
         match pending {
             PendingRequest::Chats => {
                 let chats = result
@@ -377,12 +447,16 @@ impl App {
                     .and_then(|v| v.as_array())
                     .map(|list| list.iter().filter_map(parse_message).collect())
                     .unwrap_or_else(Vec::new);
-                self.messages = messages;
-                self.selected_message = None;
-                self.status = "history loaded".to_string();
-                let handles: Vec<String> = self
-                    .messages
-                    .iter()
+            self.messages = messages;
+            self.selected_message = None;
+            self.status = "history loaded".to_string();
+            let message_snapshot = self.messages.clone();
+            for message in &message_snapshot {
+                self.fetch_attachments_for_message(message);
+            }
+            let handles: Vec<String> = self
+                .messages
+                .iter()
                     .map(|m| m.sender.clone())
                     .filter(|h| !h.is_empty())
                     .filter(|h| !self.contacts.contains_key(h))
@@ -405,21 +479,21 @@ impl App {
             PendingRequest::Send => {
                 self.status = "sent".to_string();
             }
-            PendingRequest::ResolveContacts => {
-                let contacts = result
-                    .get("contacts")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                for entry in contacts {
-                    if let (Some(handle), Some(name)) = (
-                        entry.get("handle").and_then(|v| v.as_str()),
-                        entry.get("name").and_then(|v| v.as_str()),
-                    ) {
-                        self.contacts.insert(handle.to_string(), name.to_string());
-                    }
+        PendingRequest::ResolveContacts => {
+            let contacts = result
+                .get("contacts")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for entry in contacts {
+                if let (Some(handle), Some(name)) = (
+                    entry.get("handle").and_then(|v| v.as_str()),
+                    entry.get("name").and_then(|v| v.as_str()),
+                ) {
+                    self.contacts.insert(handle.to_string(), name.to_string());
                 }
             }
+        }
         PendingRequest::ContactSearch => {
             let matches = result
                 .get("matches")
@@ -462,9 +536,33 @@ impl App {
             }
             self.contact_query = None;
         }
-            PendingRequest::Reaction => {
-                self.status = "reaction sent".to_string();
+        PendingRequest::Reaction => {
+            self.status = "reaction sent".to_string();
+        }
+        PendingRequest::AttachmentFetch => {
+            if let Some(entry) = self.pending_attachments.remove(request_id) {
+                if let Some(data) = result.get("data").and_then(|v| v.as_str()) {
+                    let ext = attachment_ext("", &entry.filename);
+                    let filename = format!("{}.{}", entry.key, ext);
+                    let path = self.attachment_dir.join(filename);
+                    if !path.exists() {
+                        if let Ok(decoded) = BASE64.decode(data) {
+                            if fs::create_dir_all(&self.attachment_dir).is_ok()
+                                && fs::write(&path, decoded).is_ok()
+                            {
+                                self.attachment_cache.insert(
+                                    entry.key,
+                                    path.to_string_lossy().to_string(),
+                                );
+                            }
+                        }
+                    } else {
+                        self.attachment_cache
+                            .insert(entry.key, path.to_string_lossy().to_string());
+                    }
+                }
             }
+        }
         }
     }
 
@@ -822,6 +920,25 @@ impl Application for App {
                 }
                 bubble_contents = bubble_contents.push(link_row.spacing(6));
             }
+            for attachment in &message.attachments {
+                if attachment_is_image(attachment) {
+                    if let Some(path) = cached_attachment_path(&self.attachment_cache, attachment) {
+                        let handle = image::Handle::from_path(path);
+                        bubble_contents = bubble_contents.push(
+                            image(handle)
+                                .width(Length::Fixed(180.0))
+                                .height(Length::Fixed(180.0)),
+                        );
+                    } else {
+                        let label = format!("image: {} (fetching)", attachment.filename);
+                        bubble_contents =
+                            bubble_contents.push(text(label).size(12).style(text_color));
+                    }
+                } else {
+                    let label = format!("attachment: {}", attachment.filename);
+                    bubble_contents = bubble_contents.push(text(label).size(12).style(text_color));
+                }
+            }
             if let Some(summary) = reaction_summary(&message.reactions) {
                 bubble_contents = bubble_contents.push(
                     text(summary)
@@ -1000,6 +1117,55 @@ fn sender_display(contacts: &HashMap<String, String>, sender: &str) -> String {
         .get(sender)
         .cloned()
         .unwrap_or_else(|| sender.to_string())
+}
+
+fn attachment_cache_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".cache/imsg/attachments")
+    } else {
+        std::env::temp_dir().join("imsg/attachments")
+    }
+}
+
+fn attachment_key(path: &str, filename: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    filename.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn attachment_ext(path: &str, filename: &str) -> String {
+    Path::new(filename)
+        .extension()
+        .or_else(|| Path::new(path).extension())
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("bin")
+        .to_string()
+}
+
+fn attachment_is_image(attachment: &Attachment) -> bool {
+    if attachment.mime_type.starts_with("image/") {
+        return true;
+    }
+    let ext = attachment_ext(&attachment.original_path, &attachment.filename);
+    matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "heic" | "heif" | "webp"
+    )
+}
+
+fn cached_attachment_path(
+    cache: &HashMap<String, String>,
+    attachment: &Attachment,
+) -> Option<PathBuf> {
+    let key = attachment_key(&attachment.original_path, &attachment.filename);
+    if let Some(path) = cache.get(&key) {
+        return Some(PathBuf::from(path));
+    }
+    if !attachment.original_path.is_empty() && Path::new(&attachment.original_path).exists() {
+        return Some(PathBuf::from(&attachment.original_path));
+    }
+    None
 }
 
 fn extract_urls(text: &str) -> Vec<String> {
@@ -1215,6 +1381,40 @@ fn parse_message(value: &Value) -> Option<MessageRow> {
                     .collect()
             })
             .unwrap_or_default(),
+        attachments: value
+            .get("attachments")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|entry| {
+                        let original_path = entry
+                            .get("original_path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let filename = entry
+                            .get("filename")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mime_type = entry
+                            .get("mime_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if original_path.is_empty() && filename.is_empty() {
+                            return None;
+                        }
+                        Some(Attachment {
+                            original_path,
+                            filename,
+                            mime_type,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -1256,6 +1456,7 @@ mod tests {
         assert_eq!(message.chat_id, 2);
         assert_eq!(message.sender, "+123");
         assert_eq!(message.text, "hello");
+        assert!(message.attachments.is_empty());
     }
 
     #[test]
