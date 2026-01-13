@@ -23,7 +23,17 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];
+            buildInputs = [
+              pkgs.libxkbcommon
+              pkgs.wayland
+              pkgs.wayland-protocols
+              pkgs.xorg.libX11
+              pkgs.xorg.libXcursor
+              pkgs.xorg.libXi
+              pkgs.xorg.libXrandr
+              pkgs.xorg.libXinerama
+            ];
             postInstall = ''
               install -Dm755 nixos/imsg-gui-net $out/bin/imsg-gui-net
               install -Dm644 nixos/imsg-gui.desktop $out/share/applications/imsg-gui.desktop
@@ -41,6 +51,14 @@
               pkgs.rustc
               pkgs.cargo
               pkgs.pkg-config
+              pkgs.libxkbcommon
+              pkgs.wayland
+              pkgs.wayland-protocols
+              pkgs.xorg.libX11
+              pkgs.xorg.libXcursor
+              pkgs.xorg.libXi
+              pkgs.xorg.libXrandr
+              pkgs.xorg.libXinerama
             ];
           };
         });

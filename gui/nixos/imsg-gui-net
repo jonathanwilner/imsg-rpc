@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
 set -e
 
+: "${WINIT_UNIX_BACKEND:=wayland}"
+export WINIT_UNIX_BACKEND
+
 exec imsg-gui --transport tcp --host 192.168.2.186 --port 57999 "$@"
