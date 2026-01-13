@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 use iced::{
-    alignment, executor, theme,
+    executor, theme,
     widget::{
         button, column, container, horizontal_space, image, pick_list, row, scrollable, text,
         text_editor, text_input, Column, Container,
@@ -423,6 +423,9 @@ impl App {
                     self.selected = 0;
                 }
                 self.status = "chats loaded".to_string();
+                if let Some(chat) = self.chats.get(self.selected) {
+                    self.request_history(chat.id);
+                }
                 let handles: Vec<String> = self
                     .chats
                     .iter()
@@ -447,16 +450,16 @@ impl App {
                     .and_then(|v| v.as_array())
                     .map(|list| list.iter().filter_map(parse_message).collect())
                     .unwrap_or_else(Vec::new);
-            self.messages = messages;
-            self.selected_message = None;
-            self.status = "history loaded".to_string();
-            let message_snapshot = self.messages.clone();
-            for message in &message_snapshot {
-                self.fetch_attachments_for_message(message);
-            }
-            let handles: Vec<String> = self
-                .messages
-                .iter()
+                self.messages = messages;
+                self.selected_message = None;
+                self.status = "history loaded".to_string();
+                let message_snapshot = self.messages.clone();
+                for message in &message_snapshot {
+                    self.fetch_attachments_for_message(message);
+                }
+                let handles: Vec<String> = self
+                    .messages
+                    .iter()
                     .map(|m| m.sender.clone())
                     .filter(|h| !h.is_empty())
                     .filter(|h| !self.contacts.contains_key(h))
@@ -479,90 +482,90 @@ impl App {
             PendingRequest::Send => {
                 self.status = "sent".to_string();
             }
-        PendingRequest::ResolveContacts => {
-            let contacts = result
-                .get("contacts")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            for entry in contacts {
-                if let (Some(handle), Some(name)) = (
-                    entry.get("handle").and_then(|v| v.as_str()),
-                    entry.get("name").and_then(|v| v.as_str()),
-                ) {
-                    self.contacts.insert(handle.to_string(), name.to_string());
+            PendingRequest::ResolveContacts => {
+                let contacts = result
+                    .get("contacts")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                for entry in contacts {
+                    if let (Some(handle), Some(name)) = (
+                        entry.get("handle").and_then(|v| v.as_str()),
+                        entry.get("name").and_then(|v| v.as_str()),
+                    ) {
+                        self.contacts.insert(handle.to_string(), name.to_string());
+                    }
                 }
             }
-        }
-        PendingRequest::ContactSearch => {
-            let matches = result
-                .get("matches")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let mut handles = Vec::new();
-            let mut labels = Vec::new();
-            for entry in matches {
-                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(list) = entry.get("handles").and_then(|v| v.as_array()) {
-                    for handle in list {
-                        if let Some(value) = handle.as_str() {
-                            handles.push(value.to_string());
-                            if !name.is_empty() {
-                                labels.push(format!("{name} <{value}>"));
-                            } else {
-                                labels.push(value.to_string());
+            PendingRequest::ContactSearch => {
+                let matches = result
+                    .get("matches")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let mut handles = Vec::new();
+                let mut labels = Vec::new();
+                for entry in matches {
+                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(list) = entry.get("handles").and_then(|v| v.as_array()) {
+                        for handle in list {
+                            if let Some(value) = handle.as_str() {
+                                handles.push(value.to_string());
+                                if !name.is_empty() {
+                                    labels.push(format!("{name} <{value}>"));
+                                } else {
+                                    labels.push(value.to_string());
+                                }
                             }
                         }
                     }
                 }
-            }
-            if handles.len() == 1 {
-                self.compose_to = handles[0].clone();
-                let body = self.compose_content.text().trim().to_string();
-                if !body.is_empty() && self.contact_query.is_some() {
-                    let target = self.compose_to.clone();
-                    self.request_send_to(&target, &body);
-                    self.record_recipient(&target);
-                    self.compose_content = text_editor::Content::new();
-                    self.status = "sent".to_string();
-                } else {
-                    self.status = "contact resolved".to_string();
-                }
-            } else if handles.is_empty() {
-                self.status = "no contact matches; enter handle".to_string();
-            } else {
-                self.status = format!("multiple matches: {}", labels.join(", "));
-            }
-            self.contact_query = None;
-        }
-        PendingRequest::Reaction => {
-            self.status = "reaction sent".to_string();
-        }
-        PendingRequest::AttachmentFetch => {
-            if let Some(entry) = self.pending_attachments.remove(request_id) {
-                if let Some(data) = result.get("data").and_then(|v| v.as_str()) {
-                    let ext = attachment_ext("", &entry.filename);
-                    let filename = format!("{}.{}", entry.key, ext);
-                    let path = self.attachment_dir.join(filename);
-                    if !path.exists() {
-                        if let Ok(decoded) = BASE64.decode(data) {
-                            if fs::create_dir_all(&self.attachment_dir).is_ok()
-                                && fs::write(&path, decoded).is_ok()
-                            {
-                                self.attachment_cache.insert(
-                                    entry.key,
-                                    path.to_string_lossy().to_string(),
-                                );
-                            }
-                        }
+                if handles.len() == 1 {
+                    self.compose_to = handles[0].clone();
+                    let body = self.compose_content.text().trim().to_string();
+                    if !body.is_empty() && self.contact_query.is_some() {
+                        let target = self.compose_to.clone();
+                        self.request_send_to(&target, &body);
+                        self.record_recipient(&target);
+                        self.compose_content = text_editor::Content::new();
+                        self.status = "sent".to_string();
                     } else {
-                        self.attachment_cache
-                            .insert(entry.key, path.to_string_lossy().to_string());
+                        self.status = "contact resolved".to_string();
+                    }
+                } else if handles.is_empty() {
+                    self.status = "no contact matches; enter handle".to_string();
+                } else {
+                    self.status = format!("multiple matches: {}", labels.join(", "));
+                }
+                self.contact_query = None;
+            }
+            PendingRequest::Reaction => {
+                self.status = "reaction sent".to_string();
+            }
+            PendingRequest::AttachmentFetch => {
+                if let Some(entry) = self.pending_attachments.remove(request_id) {
+                    if let Some(data) = result.get("data").and_then(|v| v.as_str()) {
+                        let ext = attachment_ext("", &entry.filename);
+                        let filename = format!("{}.{}", entry.key, ext);
+                        let path = self.attachment_dir.join(filename);
+                        if !path.exists() {
+                            if let Ok(decoded) = BASE64.decode(data) {
+                                if fs::create_dir_all(&self.attachment_dir).is_ok()
+                                    && fs::write(&path, decoded).is_ok()
+                                {
+                                    self.attachment_cache.insert(
+                                        entry.key,
+                                        path.to_string_lossy().to_string(),
+                                    );
+                                }
+                            }
+                        } else {
+                            self.attachment_cache
+                                .insert(entry.key, path.to_string_lossy().to_string());
+                        }
                     }
                 }
             }
-        }
         }
     }
 
@@ -677,8 +680,14 @@ impl Application for App {
                 self.request_chats();
             }
             AppMessage::SelectChat(index) => {
+                let previous_chat_id = self.chats.get(self.selected).map(|chat| chat.id);
                 self.selected = index;
                 self.selected_message = None;
+                if let Some(chat) = self.chats.get(self.selected) {
+                    if Some(chat.id) != previous_chat_id {
+                        self.request_history(chat.id);
+                    }
+                }
             }
             AppMessage::SelectMessage(index) => {
                 self.selected_message = Some(index);
@@ -787,16 +796,47 @@ impl Application for App {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let cosmic_bg = iced::Color::from_rgb(0.08, 0.09, 0.11);
-        let cosmic_panel = iced::Color::from_rgb(0.14, 0.15, 0.18);
-        let cosmic_accent = iced::Color::from_rgb(0.29, 0.64, 0.96);
-        let cosmic_text = iced::Color::from_rgb(0.92, 0.93, 0.94);
+        let app_bg = iced::Color::from_rgb8(11, 13, 18);
+        let sidebar_bg = iced::Color::from_rgb8(18, 21, 28);
+        let surface = iced::Color::from_rgb8(25, 29, 38);
+        let accent = iced::Color::from_rgb8(56, 150, 255);
+        let accent_soft = iced::Color::from_rgb8(120, 190, 255);
+        let text_primary = iced::Color::from_rgb8(232, 236, 244);
+        let text_muted = iced::Color::from_rgb8(150, 158, 173);
         let imessage_blue = iced::Color::from_rgb8(0, 122, 255);
         let sms_green = iced::Color::from_rgb8(52, 199, 89);
-        let bubble_gray = iced::Color::from_rgb8(229, 229, 234);
-        let bubble_text_dark = iced::Color::from_rgb8(24, 24, 24);
+        let bubble_gray = iced::Color::from_rgb8(235, 235, 240);
+        let bubble_text_dark = iced::Color::from_rgb8(20, 20, 24);
 
-        let mut chat_items = Column::new().spacing(6);
+        let connection = if self.client.is_some() { "online" } else { "offline" };
+        let status_line = if self.status.is_empty() {
+            "ready".to_string()
+        } else {
+            self.status.clone()
+        };
+
+        let header = Container::new(
+            row![
+                text("IMsg").size(24).style(text_primary),
+                text("COSMIC").size(12).style(accent_soft),
+                horizontal_space(),
+                text(format!("{connection} · {status_line}"))
+                    .size(12)
+                    .style(text_muted),
+                button(text("Help").size(12))
+                    .on_press(AppMessage::ToggleHelp)
+                    .style(theme::Button::Text),
+            ]
+            .align_items(iced::Alignment::Center)
+            .spacing(12),
+        )
+        .padding(12)
+        .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+            background: app_bg,
+            text_color: Some(text_primary),
+        })));
+
+        let mut chat_items = Column::new().spacing(8);
         for (index, chat) in self.chats.iter().enumerate() {
             let contact_name = self
                 .contacts
@@ -822,52 +862,75 @@ impl Application for App {
                     display
                 }
             };
-            let label = if chat.name.is_empty() {
-                if !contact_name.is_empty() {
-                    format!(
-                        "{} ({}) [{}] {}",
-                        contact_name, chat.identifier, chat.service, chat.last_message_at
-                    )
-                } else if !participant_label.is_empty() {
-                    format!("{} [{}] {}", participant_label, chat.service, chat.last_message_at)
-                } else if chat.identifier.is_empty() {
-                    format!("[{}] {}", chat.service, chat.last_message_at)
-                } else {
-                    format!("{} [{}] {}", chat.identifier, chat.service, chat.last_message_at)
-                }
-            } else if chat.identifier.is_empty() {
-                format!("{} [{}] {}", chat.name, chat.service, chat.last_message_at)
-            } else if contact_name.is_empty() || contact_name == chat.name {
-                format!(
-                    "{} ({}) [{}] {}",
-                    chat.name, chat.identifier, chat.service, chat.last_message_at
-                )
+            let primary = if !chat.name.is_empty() {
+                chat.name.clone()
+            } else if !contact_name.is_empty() {
+                contact_name
+            } else if !participant_label.is_empty() {
+                participant_label
+            } else if !chat.identifier.is_empty() {
+                chat.identifier.clone()
             } else {
-                format!(
-                    "{} ({}, {}) [{}] {}",
-                    chat.name, contact_name, chat.identifier, chat.service, chat.last_message_at
-                )
+                "Unknown chat".to_string()
             };
+            let mut secondary_parts = Vec::new();
+            if !chat.identifier.is_empty() && primary != chat.identifier {
+                secondary_parts.push(chat.identifier.clone());
+            }
+            if !chat.service.is_empty() {
+                secondary_parts.push(chat.service.clone());
+            }
+            if !chat.last_message_at.is_empty() {
+                secondary_parts.push(chat.last_message_at.clone());
+            }
+            let secondary = secondary_parts.join(" · ");
 
-            let row = row![text(label).size(14)].padding(6);
             let is_selected = index == self.selected;
-            let background = if is_selected { cosmic_accent } else { cosmic_panel };
+            let title_color = if is_selected { iced::Color::WHITE } else { text_primary };
+            let meta_color = if is_selected {
+                iced::Color::from_rgb8(210, 226, 255)
+            } else {
+                text_muted
+            };
+            let row = column![
+                text(primary).size(15).style(title_color),
+                text(secondary).size(11).style(meta_color)
+            ]
+            .spacing(4)
+            .padding(10);
+            let background = if is_selected { accent } else { surface };
             let button = button(Container::new(row).style(theme::Container::Custom(Box::new(
                 CosmicContainerStyle {
                     background,
-                    text_color: Some(cosmic_text),
+                    text_color: Some(text_primary),
                 },
             ))))
-                .on_press(AppMessage::SelectChat(index));
+            .on_press(AppMessage::SelectChat(index));
             chat_items = chat_items.push(button);
         }
 
-        let chat_panel = Container::new(scrollable(chat_items).height(Length::Fill))
-            .width(Length::FillPortion(3))
-            .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
-                background: cosmic_panel,
-                text_color: Some(cosmic_text),
-            })));
+        let chat_header = row![
+            text("Chats").size(18).style(text_primary),
+            horizontal_space(),
+            button(text("Refresh").size(12))
+                .on_press(AppMessage::RefreshChats)
+                .style(theme::Button::Text),
+        ]
+        .align_items(iced::Alignment::Center);
+
+        let chat_panel = Container::new(
+            column![
+                chat_header,
+                scrollable(chat_items).height(Length::Fill)
+            ]
+            .spacing(12),
+        )
+        .width(Length::FillPortion(3))
+        .padding(12)
+        .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+            background: sidebar_bg,
+            text_color: Some(text_primary),
+        })));
 
         let mut message_lookup: HashMap<String, (String, String)> = HashMap::new();
         for message in &self.messages {
@@ -876,7 +939,7 @@ impl Application for App {
             }
         }
 
-        let mut message_items = Column::new().spacing(10);
+        let mut message_items = Column::new().spacing(14);
         for (index, message) in self.messages.iter().enumerate() {
             let sender = sender_display(&self.contacts, &message.sender);
             let header = format!("{} {}", message.created_at, sender);
@@ -899,26 +962,27 @@ impl Application for App {
             } else {
                 bubble_text_dark
             };
-            let mut bubble_contents = Column::new().spacing(4);
-            bubble_contents = bubble_contents.push(text(header).size(12).style(text_color));
+            let muted_color = if message.is_from_me {
+                iced::Color::from_rgb8(210, 226, 255)
+            } else {
+                iced::Color::from_rgb8(90, 90, 90)
+            };
+            let mut bubble_contents = Column::new().spacing(6);
+            bubble_contents = bubble_contents.push(text(header).size(11).style(muted_color));
             if let Some(reply) = reply_preview(message, &message_lookup, &self.contacts) {
-                bubble_contents = bubble_contents.push(
-                    text(reply)
-                        .size(12)
-                        .style(iced::Color::from_rgb8(90, 90, 90)),
-                );
+                bubble_contents = bubble_contents.push(text(reply).size(12).style(muted_color));
             }
             bubble_contents = bubble_contents.push(text(message.text.clone()).size(16).style(text_color));
             let urls = extract_urls(&message.text);
             if !urls.is_empty() {
-                let mut link_row = row![];
+                let mut link_row = row![].spacing(6);
                 for url in urls {
                     let link = button(text(&url).size(12).style(imessage_blue))
                         .on_press(AppMessage::OpenUrl(url.clone()))
                         .style(theme::Button::Text);
                     link_row = link_row.push(link);
                 }
-                bubble_contents = bubble_contents.push(link_row.spacing(6));
+                bubble_contents = bubble_contents.push(link_row);
             }
             for attachment in &message.attachments {
                 if attachment_is_image(attachment) {
@@ -926,13 +990,12 @@ impl Application for App {
                         let handle = image::Handle::from_path(path);
                         bubble_contents = bubble_contents.push(
                             image(handle)
-                                .width(Length::Fixed(180.0))
-                                .height(Length::Fixed(180.0)),
+                                .width(Length::Fixed(200.0))
+                                .height(Length::Fixed(200.0)),
                         );
                     } else {
                         let label = format!("image: {} (fetching)", attachment.filename);
-                        bubble_contents =
-                            bubble_contents.push(text(label).size(12).style(text_color));
+                        bubble_contents = bubble_contents.push(text(label).size(12).style(text_color));
                     }
                 } else {
                     let label = format!("attachment: {}", attachment.filename);
@@ -940,19 +1003,15 @@ impl Application for App {
                 }
             }
             if let Some(summary) = reaction_summary(&message.reactions) {
-                bubble_contents = bubble_contents.push(
-                    text(summary)
-                        .size(12)
-                        .style(iced::Color::from_rgb8(90, 90, 90)),
-                );
+                bubble_contents = bubble_contents.push(text(summary).size(12).style(muted_color));
             }
             let is_selected = self.selected_message == Some(index);
             let bubble = Container::new(bubble_contents)
-                .padding(8)
+                .padding(12)
                 .style(theme::Container::Custom(Box::new(BubbleStyle {
                     background,
                     text_color: Some(text_color),
-                    border_color: if is_selected { Some(cosmic_accent) } else { None },
+                    border_color: if is_selected { Some(accent_soft) } else { None },
                 })));
             let bubble_button = button(bubble)
                 .on_press(AppMessage::SelectMessage(index))
@@ -965,21 +1024,61 @@ impl Application for App {
             message_items = message_items.push(aligned);
         }
 
-        let message_panel = Container::new(scrollable(message_items).height(Length::Fill))
-            .width(Length::FillPortion(7))
-            .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
-                background: cosmic_bg,
-                text_color: Some(cosmic_text),
-            })));
+        let selected_title = self
+            .chats
+            .get(self.selected)
+            .map(|chat| {
+                if chat.name.is_empty() {
+                    if chat.identifier.is_empty() {
+                        "Select a chat".to_string()
+                    } else {
+                        chat.identifier.clone()
+                    }
+                } else {
+                    chat.name.clone()
+                }
+            })
+            .unwrap_or_else(|| "Select a chat".to_string());
 
-        let controls = row![
-            button(text("Refresh")).on_press(AppMessage::RefreshChats),
-            button(text("History")).on_press(AppMessage::LoadHistory),
-            button(text("Watch")).on_press(AppMessage::ToggleWatch),
-            button(text("React")).on_press(AppMessage::StartReaction),
-            button(text("Help")).on_press(AppMessage::ToggleHelp),
+        let actions = row![
+            button(text("Reload").size(12)).on_press(AppMessage::LoadHistory),
+            button(text("Watch").size(12)).on_press(AppMessage::ToggleWatch),
+            button(text("React").size(12)).on_press(AppMessage::StartReaction),
         ]
-        .spacing(10);
+        .spacing(8);
+
+        let conversation_header = row![
+            column![
+                text(selected_title).size(18).style(text_primary),
+                text("Messages").size(12).style(text_muted),
+            ]
+            .spacing(4),
+            horizontal_space(),
+            actions,
+        ]
+        .align_items(iced::Alignment::Center);
+
+        let message_scroll: Element<'_, AppMessage> = if self.messages.is_empty() {
+            Container::new(
+                column![
+                    text("No messages loaded yet").size(16).style(text_primary),
+                    text("Select a chat to load history.").size(12).style(text_muted),
+                ]
+                .spacing(8),
+            )
+            .padding(24)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+                background: surface,
+                text_color: Some(text_primary),
+            })))
+            .into()
+        } else {
+            Container::new(scrollable(message_items).height(Length::Fill))
+                .padding(8)
+                .into()
+        };
 
         let to_input = text_input("to (handle or name)", &self.compose_to)
             .on_input(AppMessage::ComposeToChanged)
@@ -993,18 +1092,17 @@ impl Application for App {
         .placeholder("recent");
         let editor = text_editor(&self.compose_content)
             .on_action(AppMessage::ComposeAction)
-            .height(Length::Fixed(100.0));
+            .height(Length::Fixed(120.0));
         let send = button(text("Send")).on_press(AppMessage::SendCompose);
         let clear = button(text("Clear")).on_press(AppMessage::ClearCompose);
-
         let compose_row = row![to_input, recent_pick, send, clear].spacing(10);
-        let status = text(&self.status)
-            .size(14)
-            .horizontal_alignment(alignment::Horizontal::Left);
 
-        let footer = column![controls, compose_row, editor, status]
-            .spacing(10)
-            .padding(12);
+        let composer = Container::new(column![compose_row, editor].spacing(10))
+            .padding(12)
+            .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+                background: surface,
+                text_color: Some(text_primary),
+            })));
 
         if self.show_help {
             return Container::new(text(help_text()).size(16))
@@ -1012,8 +1110,8 @@ impl Application for App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
-                    background: iced::Color::from_rgb(0.08, 0.09, 0.11),
-                    text_color: Some(cosmic_text),
+                    background: app_bg,
+                    text_color: Some(text_primary),
                 })))
                 .into();
         }
@@ -1038,24 +1136,32 @@ impl Application for App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
-                    background: iced::Color::from_rgb(0.08, 0.09, 0.11),
-                    text_color: Some(cosmic_text),
+                    background: app_bg,
+                    text_color: Some(text_primary),
                 })))
                 .into();
         }
 
-        let content = column![
-            row![chat_panel, message_panel].height(Length::Fill),
-            footer
-        ]
-        .height(Length::Fill);
+        let message_column = Container::new(
+            column![conversation_header, message_scroll, composer].spacing(12),
+        )
+        .width(Length::FillPortion(7))
+        .padding(12)
+        .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
+            background: app_bg,
+            text_color: Some(text_primary),
+        })));
+
+        let content = column![header, row![chat_panel, message_column]]
+            .spacing(8)
+            .height(Length::Fill);
 
         Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::Container::Custom(Box::new(CosmicContainerStyle {
-                background: cosmic_bg,
-                text_color: Some(cosmic_text),
+                background: app_bg,
+                text_color: Some(text_primary),
             })))
             .into()
     }
