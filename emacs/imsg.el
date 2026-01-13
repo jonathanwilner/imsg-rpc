@@ -846,6 +846,7 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'imsg-history-compose)
     (define-key map (kbd "r") #'imsg-history-reply)
+    (define-key map (kbd "m") #'imsg-send-interactive)
     (define-key map (kbd "C-c C-t") #'imsg-transient)
     map))
 
