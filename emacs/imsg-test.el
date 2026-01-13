@@ -121,5 +121,42 @@
       (imsg--resubscribe-all)
       (should (equal called '(("chat_id" . 1)))))))
 
+(ert-deftest imsg-image-rendering-team-wilner ()
+  (let ((enabled (getenv "IMSG_IMAGE_TEST")))
+    (unless enabled
+      (ert-skip "IMSG_IMAGE_TEST not set"))
+    (let* ((host (or (getenv "IMSG_RPC_HOST") "192.168.2.186"))
+           (port (string-to-number (or (getenv "IMSG_RPC_PORT") "57999")))
+           (imsg-transport 'network)
+           (imsg-network-host host)
+           (imsg-network-port port)
+           (imsg-request-timeout 10)
+           (imsg-history-timeout 20))
+      (unwind-protect
+          (let* ((result (imsg-chats-list 100))
+                 (chats (alist-get 'chats result))
+                 (chat (cl-find-if (lambda (entry)
+                                     (string= (alist-get 'name entry) "Team Wilner"))
+                                   chats)))
+            (unless chat
+              (ert-skip "Team Wilner chat not found"))
+            (let* ((chat-id (alist-get 'id chat))
+                   (history (imsg-messages-history-sync chat-id 20 nil nil nil t imsg-history-timeout))
+                   (messages (alist-get 'messages history))
+                   (paths nil))
+              (dolist (message messages)
+                (let ((attachments (alist-get 'attachments message)))
+                  (when (listp attachments)
+                    (dolist (attachment attachments)
+                      (let ((path (imsg--attachment-path attachment)))
+                        (when (and path (imsg--attachment-image-p attachment))
+                          (push path paths)))))))
+              (unless paths
+                (ert-fail "No image attachments found in last 20 messages"))
+              (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t)))
+                (let ((img (imsg--image-from-path (car paths))))
+                  (should img)))))
+        (imsg-stop)))))
+
 (provide 'imsg-test)
 ;;; imsg-test.el ends here

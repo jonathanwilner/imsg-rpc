@@ -639,13 +639,28 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
 (defun imsg--format-chat (chat)
   (let* ((chat-name (or (alist-get 'name chat) ""))
          (identifier (or (alist-get 'identifier chat) ""))
+         (participants (alist-get 'participants chat))
+         (participant-label
+          (when (listp participants)
+            (let* ((labels (mapcar (lambda (handle)
+                                     (or (gethash handle imsg--contact-cache) handle))
+                                   (delq nil participants)))
+                   (unique (delete-dups (cl-remove-if #'string-empty-p labels))))
+              (when unique
+                (let ((display (string-join (seq-take unique 3) ", ")))
+                  (if (> (length unique) 3)
+                      (format "%s +%d" display (- (length unique) 3))
+                    display))))))
          (contact-name (and (not (string-empty-p identifier))
                             (gethash identifier imsg--contact-cache)))
          (label (cond
                  ((string-empty-p chat-name)
-                  (if (and contact-name (not (string-empty-p contact-name)))
-                      (format "%s (%s)" contact-name identifier)
-                    identifier))
+                  (cond
+                   ((and contact-name (not (string-empty-p contact-name)))
+                    (format "%s (%s)" contact-name identifier))
+                   ((and participant-label (not (string-empty-p participant-label)))
+                    participant-label)
+                   (t identifier)))
                  ((string-empty-p identifier)
                   chat-name)
                  ((or (not contact-name) (string-empty-p contact-name)
@@ -801,7 +816,10 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
          (chats (alist-get 'chats result)))
     (imsg--cache-contacts
      (delete-dups
-      (delq nil (mapcar (lambda (chat) (alist-get 'identifier chat)) chats))))
+      (delq nil
+            (append (mapcar (lambda (chat) (alist-get 'identifier chat)) chats)
+                    (when-let ((participants (mapcar (lambda (chat) (alist-get 'participants chat)) chats)))
+                      (apply #'append participants))))))
     (imsg--display-chat-lines "*imsg-chats*" chats)))
 
 (defun imsg-history-interactive (chat-id limit)

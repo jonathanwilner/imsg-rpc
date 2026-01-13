@@ -49,6 +49,7 @@ struct Chat {
     identifier: String,
     service: String,
     last_message_at: String,
+    participants: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -355,7 +356,14 @@ impl App {
                 let handles: Vec<String> = self
                     .chats
                     .iter()
-                    .map(|chat| chat.identifier.clone())
+                    .flat_map(|chat| {
+                        let mut entries = Vec::new();
+                        if !chat.identifier.is_empty() {
+                            entries.push(chat.identifier.clone());
+                        }
+                        entries.extend(chat.participants.iter().cloned());
+                        entries
+                    })
                     .filter(|handle| !handle.is_empty())
                     .filter(|handle| !self.contacts.contains_key(handle))
                     .collect();
@@ -697,14 +705,37 @@ impl Application for App {
                 .get(&chat.identifier)
                 .cloned()
                 .unwrap_or_default();
-            let label = if chat.name.is_empty() {
-                if contact_name.is_empty() {
-                    format!("{} [{}] {}", chat.identifier, chat.service, chat.last_message_at)
+            let mut participants: Vec<String> = chat
+                .participants
+                .iter()
+                .filter(|value| !value.is_empty())
+                .map(|handle| self.contacts.get(handle).cloned().unwrap_or_else(|| handle.clone()))
+                .collect();
+            participants.retain(|value| !value.is_empty());
+            participants.sort();
+            participants.dedup();
+            let participant_label = if participants.is_empty() {
+                String::new()
+            } else {
+                let display = participants.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                if participants.len() > 3 {
+                    format!("{display} +{}", participants.len().saturating_sub(3))
                 } else {
+                    display
+                }
+            };
+            let label = if chat.name.is_empty() {
+                if !contact_name.is_empty() {
                     format!(
                         "{} ({}) [{}] {}",
                         contact_name, chat.identifier, chat.service, chat.last_message_at
                     )
+                } else if !participant_label.is_empty() {
+                    format!("{} [{}] {}", participant_label, chat.service, chat.last_message_at)
+                } else if chat.identifier.is_empty() {
+                    format!("[{}] {}", chat.service, chat.last_message_at)
+                } else {
+                    format!("{} [{}] {}", chat.identifier, chat.service, chat.last_message_at)
                 }
             } else if chat.identifier.is_empty() {
                 format!("{} [{}] {}", chat.name, chat.service, chat.last_message_at)
@@ -1125,6 +1156,15 @@ fn parse_chat(value: &Value) -> Option<Chat> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        participants: value
+            .get("participants")
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|entry| entry.as_str().map(|value| value.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -1200,6 +1240,7 @@ mod tests {
         assert_eq!(chat.id, 1);
         assert_eq!(chat.identifier, "+123");
         assert_eq!(chat.service, "iMessage");
+        assert!(chat.participants.is_empty());
     }
 
     #[test]

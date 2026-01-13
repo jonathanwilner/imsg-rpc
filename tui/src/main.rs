@@ -72,6 +72,7 @@ struct Chat {
     identifier: String,
     last_message_at: String,
     service: String,
+    participants: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +403,27 @@ fn sender_display(app: &App, sender: &str) -> String {
         .get(sender)
         .cloned()
         .unwrap_or_else(|| sender.to_string())
+}
+
+fn chat_participant_label(app: &App, chat: &Chat) -> String {
+    let mut labels: Vec<String> = chat
+        .participants
+        .iter()
+        .filter(|value| !value.is_empty())
+        .map(|handle| app.contacts.get(handle).cloned().unwrap_or_else(|| handle.clone()))
+        .collect();
+    labels.retain(|value| !value.is_empty());
+    labels.sort();
+    labels.dedup();
+    if labels.is_empty() {
+        return String::new();
+    }
+    let display = labels.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if labels.len() > 3 {
+        format!("{display} +{}", labels.len().saturating_sub(3))
+    } else {
+        display
+    }
 }
 
 fn chat_service(app: &App, chat_id: i64) -> Option<&str> {
@@ -1000,7 +1022,14 @@ fn handle_response(client: &mut RpcClient, app: &mut App, pending: PendingReques
             let handles: Vec<String> = app
                 .chats
                 .iter()
-                .map(|chat| chat.identifier.clone())
+                .flat_map(|chat| {
+                    let mut entries = Vec::new();
+                    if !chat.identifier.is_empty() {
+                        entries.push(chat.identifier.clone());
+                    }
+                    entries.extend(chat.participants.iter().cloned());
+                    entries
+                })
                 .filter(|handle| !handle.is_empty())
                 .filter(|handle| !app.contacts.contains_key(handle))
                 .collect();
@@ -1118,6 +1147,15 @@ fn parse_chat(value: &Value) -> Option<Chat> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        participants: value
+            .get("participants")
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|entry| entry.as_str().map(|value| value.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -1193,6 +1231,7 @@ mod tests {
         assert_eq!(chat.id, 1);
         assert_eq!(chat.identifier, "+123");
         assert_eq!(chat.service, "iMessage");
+        assert!(chat.participants.is_empty());
     }
 
     #[test]
@@ -1257,16 +1296,22 @@ fn ui(frame: &mut ratatui::Frame, app: &App) {
         .iter()
         .map(|chat| {
             let contact_name = app.contacts.get(&chat.identifier).cloned().unwrap_or_default();
+            let participant_label = chat_participant_label(app, chat);
             let title = if chat.name.is_empty() {
-                if contact_name.is_empty() {
-                    format!(
-                        "{} [{}] last={}",
-                        chat.identifier, chat.service, chat.last_message_at
-                    )
-                } else {
+                if !contact_name.is_empty() {
                     format!(
                         "{} ({}) [{}] last={}",
                         contact_name, chat.identifier, chat.service, chat.last_message_at
+                    )
+                } else if !participant_label.is_empty() {
+                    format!(
+                        "{} [{}] last={}",
+                        participant_label, chat.service, chat.last_message_at
+                    )
+                } else {
+                    format!(
+                        "{} [{}] last={}",
+                        chat.identifier, chat.service, chat.last_message_at
                     )
                 }
             } else if chat.identifier.is_empty() {
