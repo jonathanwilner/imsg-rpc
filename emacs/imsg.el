@@ -32,6 +32,11 @@
   :type 'number
   :group 'imsg)
 
+(defcustom imsg-history-timeout 20
+  "Seconds to wait for a history response."
+  :type 'number
+  :group 'imsg)
+
 (defcustom imsg-transport 'tramp
   "Transport used for RPC: local, tramp, or network."
   :type '(choice (const :tag "Local process" local)
@@ -518,6 +523,16 @@ If CALLBACK is provided, invoke it with the result asynchronously."
         (imsg-request "messages.history" params callback)
       (imsg-request-sync "messages.history" params))))
 
+(defun imsg-messages-history-sync (chat-id &optional limit participants start end attachments timeout)
+  "Fetch recent messages for CHAT-ID with a custom TIMEOUT."
+  (let ((params `(("chat_id" . ,chat-id))))
+    (when limit (setq params (append params `(("limit" . ,limit)))))
+    (when participants (setq params (append params `(("participants" . ,participants)))))
+    (when start (setq params (append params `(("start" . ,start)))))
+    (when end (setq params (append params `(("end" . ,end)))))
+    (when attachments (setq params (append params `(("attachments" . t)))))
+    (imsg-request-sync "messages.history" params timeout)))
+
 (defun imsg-send (params &optional callback)
   "Send a message using PARAMS alist.
 Example: (imsg-send '((\"to\" . \"+15551234567\") (\"text\" . \"hi\")))."
@@ -754,7 +769,7 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
 (defun imsg-history-interactive (chat-id limit)
   "Interactive history viewer."
   (interactive "nChat ID: \nnLimit: ")
-  (let* ((result (imsg-messages-history chat-id limit nil nil nil t))
+  (let* ((result (imsg-messages-history-sync chat-id limit nil nil nil t imsg-history-timeout))
          (messages (alist-get 'messages result)))
     (imsg--cache-contacts (delete-dups (mapcar (lambda (m) (alist-get 'sender m)) messages)))
     (imsg--display-messages "*imsg-history*" messages chat-id)))
