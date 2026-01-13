@@ -37,6 +37,21 @@
   :type 'number
   :group 'imsg)
 
+(defcustom imsg-attachment-timeout 20
+  "Seconds to wait for attachment fetch responses."
+  :type 'number
+  :group 'imsg)
+
+(defcustom imsg-fetch-attachments t
+  "When non-nil, fetch missing attachments over RPC."
+  :type 'boolean
+  :group 'imsg)
+
+(defcustom imsg-attachment-cache-dir (expand-file-name "~/.cache/imsg/attachments/")
+  "Directory to store fetched attachments."
+  :type 'directory
+  :group 'imsg)
+
 (defcustom imsg-image-convert-command
   (or (executable-find "magick") (executable-find "convert"))
   "External command used to convert images for inline display."
@@ -728,8 +743,10 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
 (defun imsg--attachment-path (attachment)
   (let ((path (or (alist-get 'original_path attachment)
                   (alist-get 'filename attachment))))
-    (when (and path (file-exists-p path))
-      path)))
+    (cond
+     ((and path (file-exists-p path)) path)
+     ((and path imsg-fetch-attachments) (imsg--cache-attachment path))
+     (t nil))))
 
 (defun imsg--attachment-image-p (attachment)
   (let ((mime (alist-get 'mime_type attachment))
@@ -737,6 +754,30 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
     (and path
          (or (and mime (string-prefix-p "image/" mime))
              (image-type-from-file-name path)))))
+
+(defun imsg--cache-attachment (path)
+  (when (and imsg-fetch-attachments path)
+    (let* ((cache-dir (expand-file-name imsg-attachment-cache-dir))
+           (key (secure-hash 'sha1 path))
+           (ext (or (file-name-extension path) "bin"))
+           (cache-path (expand-file-name (format "%s.%s" key ext) cache-dir)))
+      (when (file-exists-p cache-path)
+        (cl-return-from imsg--cache-attachment cache-path))
+      (make-directory cache-dir t)
+      (condition-case _err
+          (let* ((result (imsg-request-sync "attachments.fetch"
+                                            `(("path" . ,path))
+                                            imsg-attachment-timeout))
+                 (data (alist-get 'data result))
+                 (filename (alist-get 'filename result))
+                 (ext2 (or (file-name-extension filename) ext))
+                 (cache-path (expand-file-name (format "%s.%s" key ext2) cache-dir)))
+            (when (and data (stringp data))
+              (with-temp-file cache-path
+                (set-buffer-multibyte nil)
+                (insert (base64-decode-string data)))
+              cache-path))
+        (error nil)))))
 
 (defun imsg--image-from-path (path)
   (when (and (display-images-p) path)

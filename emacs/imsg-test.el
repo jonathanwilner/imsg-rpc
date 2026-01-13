@@ -158,5 +158,16 @@
                   (should img)))))
         (imsg-stop)))))
 
+(ert-deftest imsg-cache-attachment-writes-file ()
+  (let ((tmp (make-temp-file "imsg-cache-" t))
+        (imsg-fetch-attachments t))
+    (let ((imsg-attachment-cache-dir tmp))
+      (cl-letf (((symbol-function 'imsg-request-sync)
+                 (lambda (_method _params _timeout)
+                   (list (cons 'data "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/7l1i5QAAAAASUVORK5CYII=")
+                         (cons 'filename "test.png")))))
+        (let ((path (imsg--cache-attachment "/Users/jonathan/Pictures/test.heic")))
+          (should (and path (file-exists-p path))))))))
+
 (provide 'imsg-test)
 ;;; imsg-test.el ends here

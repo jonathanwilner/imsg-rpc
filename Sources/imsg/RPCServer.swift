@@ -243,6 +243,8 @@ final class RPCServer {
         try handleContactSearch(params: params, id: id)
       case "contacts.resolve":
         try handleContactResolve(params: params, id: id)
+      case "attachments.fetch":
+        try handleAttachmentFetch(params: params, id: id)
       default:
         output.sendError(id: id, error: RPCError.methodNotFound(method))
       }
@@ -407,6 +409,27 @@ final class RPCServer {
         respond(id: id, result: ["contacts": [], "warning": "contacts_unavailable"])
       }
     }
+  }
+
+  private func handleAttachmentFetch(params: [String: Any], id: Any?) throws {
+    guard let path = stringParam(params["path"]), !path.isEmpty else {
+      throw RPCError.invalidParams("path is required")
+    }
+    let maxBytes = intParam(params["max_bytes"]) ?? 10_000_000
+    let url = URL(fileURLWithPath: path)
+    let data = try Data(contentsOf: url)
+    guard data.count <= maxBytes else {
+      throw RPCError.invalidParams("attachment exceeds max_bytes")
+    }
+    let encoded = data.base64EncodedString()
+    respond(
+      id: id,
+      result: [
+        "data": encoded,
+        "bytes": data.count,
+        "filename": url.lastPathComponent,
+      ]
+    )
   }
 
   private func requireDependencies() throws -> (MessageStore, MessageWatcher, ChatCache) {
