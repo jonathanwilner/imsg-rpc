@@ -88,7 +88,7 @@ struct Reaction {
 #[derive(Debug, Clone)]
 enum PendingRequest {
     Chats,
-    History,
+    History(i64),
     WatchSubscribe,
     WatchUnsubscribe,
     Send,
@@ -135,6 +135,7 @@ struct App {
     pending: HashMap<String, PendingRequest>,
     chats: Vec<Chat>,
     messages: Vec<MessageRow>,
+    message_cache: HashMap<i64, Vec<MessageRow>>,
     selected: usize,
     selected_message: Option<usize>,
     watch_subscription: Option<String>,
@@ -183,6 +184,7 @@ impl App {
             pending: HashMap::new(),
             chats: Vec::new(),
             messages: Vec::new(),
+            message_cache: HashMap::new(),
             selected: 0,
             selected_message: None,
             watch_subscription: None,
@@ -221,12 +223,13 @@ impl App {
 
     fn request_history(&mut self, chat_id: i64) {
         if let Some(client) = &mut self.client {
+            let limit = 30;
             let id = client.send_request(
                 "messages.history",
-                Some(serde_json::json!({ "chat_id": chat_id, "limit": 50 })),
+                Some(serde_json::json!({ "chat_id": chat_id, "limit": limit })),
             );
-            self.pending.insert(id, PendingRequest::History);
-            self.status = format!("loading history for chat {}", chat_id);
+            self.pending.insert(id, PendingRequest::History(chat_id));
+            self.status = format!("loading last {limit} messages");
         }
     }
 
@@ -383,6 +386,15 @@ impl App {
                         if should_append {
                             self.messages.push(message.clone());
                         }
+                        let entry = self
+                            .message_cache
+                            .entry(message.chat_id)
+                            .or_insert_with(Vec::new);
+                        entry.push(message.clone());
+                        if entry.len() > 200 {
+                            let overflow = entry.len().saturating_sub(200);
+                            entry.drain(0..overflow);
+                        }
                         if !self.contacts.contains_key(&message.sender) {
                             self.request_contact_resolve(&[message.sender.clone()]);
                         }
@@ -424,9 +436,14 @@ impl App {
                 }
                 self.status = "chats loaded".to_string();
                 if let Some(chat) = self.chats.get(self.selected) {
-                    self.request_history(chat.id);
+                    if let Some(cached) = self.message_cache.get(&chat.id).cloned() {
+                        self.messages = cached;
+                        self.status = "loaded cached history".to_string();
+                    } else {
+                        self.request_history(chat.id);
+                    }
                 }
-                let handles: Vec<String> = self
+                let mut handles: Vec<String> = self
                     .chats
                     .iter()
                     .flat_map(|chat| {
@@ -440,30 +457,42 @@ impl App {
                     .filter(|handle| !handle.is_empty())
                     .filter(|handle| !self.contacts.contains_key(handle))
                     .collect();
+                handles.sort();
+                handles.dedup();
                 if !handles.is_empty() {
                     self.request_contact_resolve(&handles);
                 }
             }
-            PendingRequest::History => {
+            PendingRequest::History(chat_id) => {
                 let messages = result
                     .get("messages")
                     .and_then(|v| v.as_array())
                     .map(|list| list.iter().filter_map(parse_message).collect())
                     .unwrap_or_else(Vec::new);
-                self.messages = messages;
-                self.selected_message = None;
-                self.status = "history loaded".to_string();
+                self.message_cache.insert(chat_id, messages.clone());
+                if self
+                    .chats
+                    .get(self.selected)
+                    .map(|chat| chat.id == chat_id)
+                    .unwrap_or(false)
+                {
+                    self.messages = messages;
+                    self.selected_message = None;
+                    self.status = "history loaded".to_string();
+                }
                 let message_snapshot = self.messages.clone();
                 for message in &message_snapshot {
                     self.fetch_attachments_for_message(message);
                 }
-                let handles: Vec<String> = self
+                let mut handles: Vec<String> = self
                     .messages
                     .iter()
                     .map(|m| m.sender.clone())
                     .filter(|h| !h.is_empty())
                     .filter(|h| !self.contacts.contains_key(h))
                     .collect();
+                handles.sort();
+                handles.dedup();
                 if !handles.is_empty() {
                     self.request_contact_resolve(&handles);
                 }
@@ -685,7 +714,13 @@ impl Application for App {
                 self.selected_message = None;
                 if let Some(chat) = self.chats.get(self.selected) {
                     if Some(chat.id) != previous_chat_id {
-                        self.request_history(chat.id);
+                        if let Some(cached) = self.message_cache.get(&chat.id).cloned() {
+                            self.messages = cached;
+                            self.status = "loaded cached history".to_string();
+                        } else {
+                            self.messages.clear();
+                            self.request_history(chat.id);
+                        }
                     }
                 }
             }
