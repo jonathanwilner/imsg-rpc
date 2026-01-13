@@ -103,6 +103,7 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
 (defvar imsg--desired-subscriptions (make-hash-table :test 'equal))
 (defvar imsg--contact-cache (make-hash-table :test 'equal))
 (defvar imsg--recipient-history nil)
+(defvar imsg--history-watch-tokens (make-hash-table :test 'equal))
 
 (defface imsg-sent-face
   '((t :foreground "white" :background "DodgerBlue3"))
@@ -270,7 +271,8 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
 (defun imsg--handle-notification (payload)
   (let* ((method (alist-get 'method payload nil nil #'equal))
          (params (alist-get 'params payload nil nil #'equal)))
-    (when (string= method "message")
+    (cond
+     ((string= method "message")
       (let* ((subscription (imsg--subscription-key
                             (alist-get 'subscription params nil nil #'equal)))
              (message (alist-get 'message params nil nil #'equal))
@@ -281,7 +283,11 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
           (imsg--cache-contacts (list (alist-get 'sender message)))
           (when imsg-notify-enabled
             (funcall imsg-notify-function message))
-          (run-hook-with-args 'imsg-on-message-hook message))))))
+          (run-hook-with-args 'imsg-on-message-hook message))))
+     ((string= method "error")
+      (let* ((err (alist-get 'error params nil nil #'equal))
+             (msg (alist-get 'message err nil nil #'equal)))
+        (message "imsg: watch error %s" (or msg err)))))))
 
 (defun imsg--default-notify (message)
   (let* ((sender (imsg--sender-display message))
@@ -804,7 +810,28 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
   (let* ((result (imsg-messages-history-sync chat-id limit nil nil nil t imsg-history-timeout))
          (messages (alist-get 'messages result)))
     (imsg--cache-contacts (delete-dups (mapcar (lambda (m) (alist-get 'sender m)) messages)))
-    (imsg--display-messages "*imsg-history*" messages chat-id)))
+    (imsg--display-messages "*imsg-history*" messages chat-id)
+    (imsg--history-watch chat-id)))
+
+(defun imsg--history-watch (chat-id)
+  "Subscribe to updates for CHAT-ID and append to the history buffer."
+  (let* ((key (format "%s" chat-id)))
+    (unless (gethash key imsg--history-watch-tokens)
+      (let ((params `(("chat_id" . ,chat-id) ("attachments" . t))))
+        (imsg-watch-subscribe
+         params
+         (lambda (message)
+           (let ((msg-chat (alist-get 'chat_id message)))
+             (when (and msg-chat (equal msg-chat chat-id))
+               (with-current-buffer (get-buffer-create "*imsg-history*")
+                 (imsg-history-mode)
+                 (let ((inhibit-read-only t))
+                   (goto-char (point-max))
+                   (imsg--insert-message message))))))
+         (lambda (subscription err)
+           (if err
+               (message "imsg: history watch error %S" err)
+             (puthash key subscription imsg--history-watch-tokens))))))))
 
 (defun imsg-send-interactive (to text &optional file service)
   "Interactive send."
