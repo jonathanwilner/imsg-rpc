@@ -23,6 +23,11 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postInstall = ''
+              install -Dm755 nixos/imsg-gui-net $out/bin/imsg-gui-net
+              install -Dm644 nixos/imsg-gui.desktop $out/share/applications/imsg-gui.desktop
+            '';
           };
         });
 

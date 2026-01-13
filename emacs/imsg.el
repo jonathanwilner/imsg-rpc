@@ -58,7 +58,7 @@
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'imsg)
 
-(defcustom imsg-transport 'tramp
+(defcustom imsg-transport 'network
   "Transport used for RPC: local, tramp, or network."
   :type '(choice (const :tag "Local process" local)
                  (const :tag "TRAMP SSH" tramp)
@@ -86,7 +86,7 @@ When nil, runs locally. Example: \"/ssh:user@mac-host:\"."
   :type '(choice (const :tag "Local" nil) string)
   :group 'imsg)
 
-(defcustom imsg-network-host "127.0.0.1"
+(defcustom imsg-network-host "192.168.2.186"
   "Host for the network transport."
   :type 'string
   :group 'imsg)

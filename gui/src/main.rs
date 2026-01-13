@@ -27,13 +27,13 @@ use rpc::{RpcClient, RpcEvent};
 #[derive(Debug, Parser)]
 #[command(name = "imsg-gui", about = "COSMIC-style GUI for imsg RPC")]
 struct Args {
-    #[arg(long, value_enum, default_value = "local")]
+    #[arg(long, value_enum, default_value = "tcp")]
     transport: Transport,
     #[arg(long, default_value = "imsg")]
     imsg_bin: String,
     #[arg(long)]
     db: Option<String>,
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "192.168.2.186")]
     host: String,
     #[arg(long, default_value_t = 57999)]
     port: u16,
@@ -636,10 +636,10 @@ struct Flags {
 impl Default for Flags {
     fn default() -> Self {
         Self {
-            transport: Transport::Local,
+            transport: Transport::Tcp,
             imsg_bin: "imsg".to_string(),
             db: None,
-            host: "127.0.0.1".to_string(),
+            host: "192.168.2.186".to_string(),
             port: 57999,
             notify: true,
         }

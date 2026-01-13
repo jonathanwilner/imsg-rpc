@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=IMsg GUI
+Comment=imsg COSMIC client
+Exec=imsg-gui-net
+Terminal=false
+Categories=Network;Chat;
