@@ -37,6 +37,12 @@
   :type 'number
   :group 'imsg)
 
+(defcustom imsg-image-convert-command
+  (or (executable-find "magick") (executable-find "convert"))
+  "External command used to convert images for inline display."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'imsg)
+
 (defcustom imsg-transport 'tramp
   "Transport used for RPC: local, tramp, or network."
   :type '(choice (const :tag "Local process" local)
@@ -702,6 +708,21 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
          (or (and mime (string-prefix-p "image/" mime))
              (image-type-from-file-name path)))))
 
+(defun imsg--image-from-path (path)
+  (when (and (display-images-p) path)
+    (let* ((type (image-type-from-file-name path))
+           (supported (and type (image-type-available-p type))))
+      (cond
+       (supported (create-image path type))
+       ((and imsg-image-convert-command
+             (executable-find imsg-image-convert-command))
+        (let ((tmp (make-temp-file "imsg-img-" nil ".png")))
+          (if (eq 0 (apply #'call-process imsg-image-convert-command nil nil nil
+                           (list path tmp)))
+              (create-image tmp 'png)
+            nil)))
+       (t nil)))))
+
 (defun imsg--insert-message (message)
   (insert (imsg--format-message message) "\n")
   (when imsg-show-images
@@ -712,10 +733,12 @@ USER and METHOD are optional. This sets `imsg-remote-directory`."
             (let ((path (imsg--attachment-path attachment)))
               (when path
                 (condition-case _err
-                    (let ((img (create-image path)))
-                      (when img
-                        (insert-image img)
-                        (insert "\n")))
+                    (let ((img (imsg--image-from-path path)))
+                      (if img
+                          (progn
+                            (insert-image img)
+                            (insert "\n"))
+                        (insert (format "[image: %s]\n" path))))
                   (error nil)))))))))
   (insert "\n"))
 
