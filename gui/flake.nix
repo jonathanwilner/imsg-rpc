@@ -29,6 +29,8 @@
               pkgs.wayland
               pkgs.wayland-protocols
               pkgs.mesa
+              pkgs.libglvnd
+              pkgs.vulkan-loader
               pkgs.xorg.libX11
               pkgs.xorg.libXcursor
               pkgs.xorg.libXi
@@ -41,10 +43,14 @@
               wrapProgram $out/bin/imsg-gui \
                 --set WINIT_UNIX_BACKEND wayland \
                 --set WGPU_BACKEND gl \
+                --set LIBGL_ALWAYS_SOFTWARE 1 \
+                --set LIBGL_DRIVERS_PATH ${pkgs.mesa.drivers}/lib/dri \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [
                   pkgs.libxkbcommon
                   pkgs.wayland
                   pkgs.mesa
+                  pkgs.libglvnd
+                  pkgs.vulkan-loader
                   pkgs.xorg.libX11
                   pkgs.xorg.libXcursor
                   pkgs.xorg.libXi
@@ -69,6 +75,8 @@
               pkgs.wayland
               pkgs.wayland-protocols
               pkgs.mesa
+              pkgs.libglvnd
+              pkgs.vulkan-loader
               pkgs.xorg.libX11
               pkgs.xorg.libXcursor
               pkgs.xorg.libXi
